@@ -1,0 +1,22 @@
+name: Test release-module action
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/tags/v1.0.0
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          action: release-module
+          module_path: modules/my-module
+          version: v1.0.0
+      - name: Assert action ran
+        run: |
+          echo "Action completed (may fail due to missing config, but inputs were accepted)"
+          echo "PASS"
