@@ -1,0 +1,26 @@
+name: Test basic action input
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          action: get-global-config
+          github_token: ${{ github.token }}
+          github_token_for_github_provider: dummy-token
+          secrets: "{}"
+          result: success
+      - name: Assert action ran
+        run: |
+          echo "action outcome: ${{ steps.action.outcome }}"
+          # The action may fail due to missing config, but it must have been invoked
+          if [ "${{ steps.action.outcome }}" = "" ]; then
+            echo "FAIL: action did not run"
+            exit 1
+          fi
+          echo "PASS: action was invoked"

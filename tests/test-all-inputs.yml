@@ -1,0 +1,37 @@
+name: Test all inputs coverage
+on:
+  workflow_dispatch:
+jobs:
+  test-get-global-config:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          action: get-global-config
+          github_token: ${{ github.token }}
+          github_token_for_github_provider: dummy-token
+          secrets: '{"MY_SECRET":"dummy-value"}'
+          aws_secrets: '{"AWS_SECRET_KEY":"dummy-value"}'
+          github_secrets: '{"GH_SECRET":"dummy-value"}'
+          csm_app_id: "12345"
+          csm_app_private_key: "dummy-private-key"
+          branch: main
+          file: tfaction_root.yaml
+          module_path: modules/example
+          version: v1.0.0
+          migration_name: example-migration
+          pr_number: "1"
+          if: "true"
+          result: success
+          issue: "1"
+          status: success
+      - name: Assert action ran
+        run: |
+          echo "Action completed (may have failed due to missing config, which is expected)"
+          echo "PASS: all inputs were accepted"

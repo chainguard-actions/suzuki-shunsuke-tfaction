@@ -1,0 +1,103 @@
+---
+# cmdx - task runner
+# https://github.com/suzuki-shunsuke/cmdx
+tasks:
+  - name: release
+    short: r
+    description: release the new version
+    usage: release the new version
+    script: rjsa "$VERSION" "$PR"
+    args:
+      - name: version
+        required: true
+        validate:
+          - regexp: "^v\\d+\\.\\d+.\\d+(-\\d+)?$"
+        script_envs:
+          - version
+      - name: pr
+        required: false
+        validate:
+          - regexp: "^\\d+$"
+        script_envs:
+          - pr
+    flags:
+      - name: ref
+        required: false
+        script_envs:
+          - REF
+
+  - name: schema
+    description: build JSON Schema
+    usage: build JSON Schema
+    script: |
+      set -eu
+
+      npm ci
+      npm run build
+      mkdir -p schema
+      env TFACTION_GENERATE_JSON_SCHEMA=1 node dist/index.js
+
+  - name: schema-doc
+    description: build the document from JSON Schema
+    usage: build the document from JSON Schema
+    require:
+      exec:
+        - generate-schema-doc
+    script: |
+      set -eu
+      mkdir -p build
+      generate-schema-doc --expand-buttons --link-to-reused-ref schema build
+  - name: build
+    description: build TypeScript
+    usage: build TypeScript
+    shell:
+      - bash
+      - -c
+    script: |
+      set -eu
+
+      npm ci
+      npm run build
+      cmdx schema
+      cmdx fmt
+  - name: test
+    short: t
+    description: Test
+    usage: Test
+    shell:
+      - bash
+      - -c
+    script: |
+      set -eu
+      npm ci
+      npm t
+  - name: update
+    short: u
+    description: Update
+    usage: Update
+    shell:
+      - bash
+      - -c
+    script: |
+      set -eu
+      npm ci
+      npm update
+      npm run build
+
+  - name: fmt
+    description: Format with prettier
+    usage: Format with prettier
+    script: |
+      set -eu
+      npm run fmt
+
+  - name: pinact
+    description: Run pinact
+    usage: Run pinact
+    shell:
+      - bash
+      - -c
+    script: |
+      set -euo pipefail
+      pinact run
+      find . -name action.yaml | xargs pinact run
