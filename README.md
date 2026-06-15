@@ -10,6 +10,7 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 |---------|-----|-----------------|
 | v2.0.0-8 | [`v2.0.0-8`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.0-8) | [`f24a403`](https://github.com/suzuki-shunsuke/tfaction/commit/f24a40308c268d6597a72eab8da2edf9cc87da1d) |
 | v2.0.1 | [`v2.0.1`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.1) | [`6ad59de`](https://github.com/suzuki-shunsuke/tfaction/commit/6ad59de70ee7e9c0a11c665c4439b5c148c74328) |
+| v2.0.2 | [`v2.0.2`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.2) | [`92afb0a`](https://github.com/suzuki-shunsuke/tfaction/commit/92afb0ac879cf9c560fe1160a9bbde50b11ff119) |
 
 ## Privacy
 
