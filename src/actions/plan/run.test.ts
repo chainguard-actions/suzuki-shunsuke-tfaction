@@ -1,0 +1,1419 @@
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import * as fs from "fs";
+import * as path from "path";
+import * as core from "@actions/core";
+import * as github from "@actions/github";
+import {
+  runTerraformPlan,
+  runTfmigratePlan,
+  disableAutoMergeForRenovateChange,
+  dismissApprovalReviews,
+  getResultSummary,
+  main,
+  type RunInputs,
+} from "./run";
+import type * as aqua from "../../aqua";
+import type * as getTargetConfig from "../get-target-config";
+import { post } from "../../comment";
+
+// Mock modules
+vi.mock("@actions/core", () => ({
+  setOutput: vi.fn(),
+  startGroup: vi.fn(),
+  endGroup: vi.fn(),
+  warning: vi.fn(),
+  info: vi.fn(),
+}));
+
+vi.mock("@actions/github", () => ({
+  getOctokit: vi.fn(),
+  context: {
+    repo: {
+      owner: "test-owner",
+      repo: "test-repo",
+    },
+  },
+}));
+
+vi.mock("@actions/artifact", () => ({
+  DefaultArtifactClient: class MockArtifactClient {
+    uploadArtifact = vi.fn().mockResolvedValue({});
+  },
+}));
+
+vi.mock("fs", async () => {
+  const actual = await vi.importActual<typeof fs>("fs");
+  return {
+    ...actual,
+    existsSync: vi.fn(),
+    readFileSync: vi.fn(),
+    writeFileSync: vi.fn(),
+    mkdtempSync: vi.fn(),
+  };
+});
+
+vi.mock("../../lib", async () => {
+  const actual = await vi.importActual("../../lib");
+  return {
+    ...actual,
+    getConfig: vi.fn(),
+    GitHubActionPath: "/mock/action/path",
+    aquaGlobalConfig: "/mock/config/aqua.yaml",
+  };
+});
+
+vi.mock("../../lib/env", () => ({
+  all: {
+    TFMIGRATE_EXEC_PATH: "",
+  },
+}));
+
+vi.mock("../../aqua", () => ({
+  NewExecutor: vi.fn(),
+}));
+
+vi.mock("../../conftest", () => ({
+  run: vi.fn(),
+}));
+
+vi.mock("../../comment", () => ({
+  post: vi.fn(),
+}));
+
+// Helper to create a mock executor
+const createMockExecutor = () => ({
+  exec: vi.fn().mockResolvedValue(0),
+  getExecOutput: vi.fn().mockResolvedValue({
+    exitCode: 0,
+    stdout: '{"resource_changes": []}',
+    stderr: "",
+  }),
+  installDir: "/mock/install",
+  githubToken: "mock-token",
+  env: vi.fn(),
+  buildArgs: vi.fn(),
+});
+
+type MockExecutor = ReturnType<typeof createMockExecutor>;
+
+// Helper to create a mock octokit with graphql
+const createMockOctokit = () => ({
+  graphql: vi.fn().mockResolvedValue({}),
+  rest: {
+    pulls: {
+      requestReviewers: vi.fn().mockResolvedValue({}),
+    },
+  },
+});
+
+// Helper to build a GraphQL reviews response
+const graphqlReviewsResponse = (
+  nodes: Array<{
+    id: string;
+    author?: { __typename: string; login: string } | null;
+  }>,
+  hasNextPage: boolean,
+  endCursor: string | null,
+) => ({
+  repository: {
+    pullRequest: {
+      reviews: {
+        nodes,
+        pageInfo: { hasNextPage, endCursor },
+      },
+    },
+  },
+});
+
+// Base inputs for tests
+const createBaseInputs = (executor: MockExecutor) => ({
+  githubToken: "test-token",
+  workingDirectory: "/test/working/dir",
+  autoAppsLogins: ["renovate[bot]", "dependabot[bot]"],
+  destroy: false,
+  tfCommand: "terraform",
+  target: "aws/test/dev",
+  allowAutoMergeChange: false,
+  dismissApprovalBeforePlan: false,
+  prNumber: undefined as number | undefined,
+  executor: executor as unknown as aqua.Executor,
+});
+
+describe("runTerraformPlan", () => {
+  let mockExecutor: MockExecutor;
+  let tempDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecutor = createMockExecutor();
+    tempDir = "/tmp/tfaction-test123";
+    vi.mocked(fs.mkdtempSync).mockReturnValue(tempDir);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns correctly when detailedExitcode=0 (no changes)", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = createBaseInputs(mockExecutor);
+    const result = await runTerraformPlan(inputs);
+
+    expect(result.detailedExitcode).toBe(0);
+    expect(result.planBinary).toBe(path.join(tempDir, "tfplan.binary"));
+    expect(result.planJson).toBe(path.join(tempDir, "tfplan.json"));
+    expect(core.setOutput).toHaveBeenCalledWith("detailed_exitcode", 0);
+    expect(core.setOutput).toHaveBeenCalledWith(
+      "plan_binary",
+      path.join(tempDir, "tfplan.binary"),
+    );
+    expect(core.setOutput).toHaveBeenCalledWith("result_summary", "no-op");
+  });
+
+  it("throws error when detailedExitcode=1 (failure)", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(1); // terraform plan fails
+
+    const inputs = createBaseInputs(mockExecutor);
+
+    await expect(runTerraformPlan(inputs)).rejects.toThrow(
+      "terraform plan failed",
+    );
+    expect(core.setOutput).toHaveBeenCalledWith("detailed_exitcode", 1);
+  });
+
+  it("returns correctly when detailedExitcode=2 (has changes)", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": [{"change": {"actions": ["update"]}}]}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = createBaseInputs(mockExecutor);
+    const result = await runTerraformPlan(inputs);
+
+    expect(result.detailedExitcode).toBe(2);
+    expect(result.planBinary).toBe(path.join(tempDir, "tfplan.binary"));
+    expect(result.planJson).toBe(path.join(tempDir, "tfplan.json"));
+    expect(core.setOutput).toHaveBeenCalledWith("result_summary", "update");
+  });
+
+  it("adds -destroy flag when destroy=true", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      destroy: true,
+    };
+    await runTerraformPlan(inputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "terraform",
+      expect.arrayContaining(["-destroy"]),
+      expect.any(Object),
+    );
+    expect(core.warning).toHaveBeenCalledWith("The destroy option is enabled");
+  });
+
+  it("uses tfcmt-drift.yaml config when driftIssueNumber is set", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      driftIssueNumber: "123",
+    };
+
+    await expect(runTerraformPlan(inputs)).rejects.toThrow(
+      "Drift detected: terraform plan has changes",
+    );
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tfcmt",
+      expect.arrayContaining([
+        "-config",
+        "/mock/action/path/install/tfcmt-drift.yaml",
+      ]),
+      expect.any(Object),
+    );
+  });
+
+  it("throws error when drift detection mode and changes detected", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      driftIssueNumber: "456",
+    };
+
+    await expect(runTerraformPlan(inputs)).rejects.toThrow(
+      "Drift detected: terraform plan has changes",
+    );
+  });
+
+  it("calls tfcmt for both PR comment and Step Summary when stepSummaryPath is set", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      stepSummaryPath: "/tmp/step-summary",
+    };
+    await runTerraformPlan(inputs);
+
+    const tfcmtCalls = mockExecutor.exec.mock.calls.filter(
+      ([cmd]) => cmd === "tfcmt",
+    );
+    expect(tfcmtCalls).toHaveLength(2);
+    expect(tfcmtCalls[0][1]).not.toContain("--output");
+    expect(tfcmtCalls[1][1]).toEqual(
+      expect.arrayContaining(["--output", "/tmp/step-summary"]),
+    );
+  });
+
+  it("skips Step Summary tfcmt call when stepSummaryPath is empty", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = createBaseInputs(mockExecutor); // no stepSummaryPath
+    await runTerraformPlan(inputs);
+
+    const tfcmtCalls = mockExecutor.exec.mock.calls.filter(
+      ([cmd]) => cmd === "tfcmt",
+    );
+    expect(tfcmtCalls).toHaveLength(1);
+    expect(tfcmtCalls[0][1]).not.toContain("--output");
+  });
+
+  it("replays captured terraform plan output into tfcmt via bash", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": [{"change": {"actions": ["update"]}}]}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = createBaseInputs(mockExecutor);
+    await runTerraformPlan(inputs);
+
+    const tfcmtCall = mockExecutor.exec.mock.calls.find(
+      ([cmd]) => cmd === "tfcmt",
+    );
+    expect(tfcmtCall).toBeDefined();
+    expect(tfcmtCall![1]).toEqual(
+      expect.arrayContaining([
+        "plan",
+        "--",
+        "bash",
+        "-c",
+        'cat "$1" && exit "$2"',
+        "_",
+        path.join(tempDir, "plan.txt"),
+        "2",
+      ]),
+    );
+  });
+
+  it("disables auto-merge when renovate PR has changes and auto_merge is enabled", async () => {
+    const mockOctokit = createMockOctokit();
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        node_id: "PR_123",
+        auto_merge: { merge_method: "squash" },
+      }),
+    );
+
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": [{"change": {"actions": ["update"]}}]}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      prAuthor: "renovate[bot]",
+      ciInfoTempDir: "/tmp/ci-info",
+    };
+
+    const result = await runTerraformPlan(inputs);
+    expect(result.detailedExitcode).toBe(2);
+    expect(mockOctokit.graphql).toHaveBeenCalledWith(
+      expect.stringContaining("disablePullRequestAutoMerge"),
+      { nodeId: "PR_123" },
+    );
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateKey: "renovate-plan-change",
+        vars: { tfaction_target: "aws/test/dev" },
+      }),
+    );
+  });
+
+  it("skips disabling auto-merge when auto_merge is not enabled", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      JSON.stringify({
+        node_id: "PR_123",
+        auto_merge: null,
+      }),
+    );
+
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": [{"change": {"actions": ["update"]}}]}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      prAuthor: "renovate[bot]",
+      ciInfoTempDir: "/tmp/ci-info",
+    };
+
+    const result = await runTerraformPlan(inputs);
+    expect(result.detailedExitcode).toBe(2);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("skips renovate check when PR author is not renovate", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(2); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": [{"change": {"actions": ["update"]}}]}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      prAuthor: "human-user",
+      ciInfoTempDir: "/tmp/ci-info",
+    };
+
+    const result = await runTerraformPlan(inputs);
+    expect(result.detailedExitcode).toBe(2);
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("writes plan JSON from terraform show output", async () => {
+    const planJsonContent = '{"format_version": "1.0", "resource_changes": []}';
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: planJsonContent,
+      stderr: "",
+    }); // terraform show
+
+    const inputs = createBaseInputs(mockExecutor);
+    await runTerraformPlan(inputs);
+
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      path.join(tempDir, "tfplan.json"),
+      planJsonContent,
+    );
+  });
+
+  it("sets artifact name outputs with normalized target", async () => {
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = createBaseInputs(mockExecutor);
+    await runTerraformPlan(inputs);
+
+    expect(core.setOutput).toHaveBeenCalledWith(
+      "plan_binary_artifact_name",
+      "terraform_plan_file_aws__test__dev",
+    );
+    expect(core.setOutput).toHaveBeenCalledWith(
+      "plan_json_artifact_name",
+      "terraform_plan_json_aws__test__dev",
+    );
+  });
+
+  it("calls dismissApprovalReviews when enabled with PR number", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse(
+          [{ id: "PRR_1", author: { __typename: "User", login: "user1" } }],
+          false,
+          null,
+        ),
+      )
+      .mockResolvedValueOnce({}); // dismiss mutation
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      dismissApprovalBeforePlan: true,
+      prNumber: 42,
+    };
+    await runTerraformPlan(inputs);
+
+    // 1 list query + 1 dismiss mutation
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(2);
+    expect(mockOctokit.rest.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewers: ["user1"],
+      }),
+    );
+  });
+
+  it("skips dismissApprovalReviews when disabled", async () => {
+    const mockOctokit = createMockOctokit();
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      dismissApprovalBeforePlan: false,
+      prNumber: 42,
+    };
+    await runTerraformPlan(inputs);
+
+    expect(mockOctokit.graphql).not.toHaveBeenCalled();
+  });
+
+  it("skips dismissApprovalReviews when no PR number", async () => {
+    const mockOctokit = createMockOctokit();
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      dismissApprovalBeforePlan: true,
+      prNumber: undefined,
+    };
+    await runTerraformPlan(inputs);
+
+    expect(mockOctokit.graphql).not.toHaveBeenCalled();
+  });
+
+  it("skips dismissApprovalReviews for Renovate PR with no changes", async () => {
+    const mockOctokit = createMockOctokit();
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      dismissApprovalBeforePlan: true,
+      prNumber: 42,
+      prAuthor: "renovate[bot]",
+    };
+    await runTerraformPlan(inputs);
+
+    expect(mockOctokit.graphql).not.toHaveBeenCalled();
+    expect(core.info).toHaveBeenCalledWith(
+      "Skipping dismiss approval reviews: Renovate PR with no changes",
+    );
+  });
+});
+
+describe("disableAutoMergeForRenovateChange", () => {
+  let mockExecutor: MockExecutor;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecutor = createMockExecutor();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("skips when pr.json not found", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      prAuthor: "renovate[bot]",
+      ciInfoTempDir: "/tmp/ci-info",
+    };
+
+    await disableAutoMergeForRenovateChange(inputs);
+    expect(core.warning).toHaveBeenCalledWith(
+      "PR JSON file not found: /tmp/ci-info/pr.json",
+    );
+    expect(post).not.toHaveBeenCalled();
+  });
+
+  it("skips when allowAutoMergeChange is true", async () => {
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      prAuthor: "renovate[bot]",
+      ciInfoTempDir: "/tmp/ci-info",
+      allowAutoMergeChange: true,
+    };
+
+    await disableAutoMergeForRenovateChange(inputs);
+    expect(post).not.toHaveBeenCalled();
+  });
+});
+
+describe("dismissApprovalReviews", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("dismisses approved reviews", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse(
+          [
+            { id: "PRR_1", author: { __typename: "User", login: "user1" } },
+            { id: "PRR_2", author: { __typename: "User", login: "user2" } },
+          ],
+          false,
+          null,
+        ),
+      )
+      .mockResolvedValueOnce({}) // dismiss PRR_1
+      .mockResolvedValueOnce({}); // dismiss PRR_2
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    // 1 list query + 2 dismiss mutations
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(3);
+    expect(mockOctokit.graphql).toHaveBeenCalledWith(
+      expect.stringContaining("dismissPullRequestReview"),
+      expect.objectContaining({
+        reviewId: "PRR_1",
+        message: expect.stringMatching(
+          /^@user1 .*terraform plan has been re-run/,
+        ),
+      }),
+    );
+    expect(mockOctokit.graphql).toHaveBeenCalledWith(
+      expect.stringContaining("dismissPullRequestReview"),
+      expect.objectContaining({
+        reviewId: "PRR_2",
+        message: expect.stringMatching(
+          /^@user2 .*terraform plan has been re-run/,
+        ),
+      }),
+    );
+    expect(mockOctokit.rest.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewers: ["user1", "user2"],
+      }),
+    );
+  });
+
+  it("handles GraphQL query failure gracefully", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql.mockRejectedValue(new Error("API error"));
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    expect(core.warning).toHaveBeenCalledWith(
+      "Failed to list reviews: API error",
+    );
+  });
+
+  it("handles individual dismiss mutation failure gracefully", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse(
+          [
+            { id: "PRR_1", author: { __typename: "User", login: "user1" } },
+            { id: "PRR_2", author: { __typename: "User", login: "user2" } },
+          ],
+          false,
+          null,
+        ),
+      )
+      .mockRejectedValueOnce(new Error("Dismiss failed")) // dismiss PRR_1 fails
+      .mockResolvedValueOnce({}); // dismiss PRR_2 succeeds
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    expect(core.warning).toHaveBeenCalledWith(
+      "Failed to dismiss review PRR_1: Dismiss failed",
+    );
+    // 1 list query + 2 dismiss mutations (both attempted)
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(3);
+    // Only user2 was successfully dismissed
+    expect(mockOctokit.rest.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewers: ["user2"],
+      }),
+    );
+  });
+
+  it("does not prepend mention for deleted user (null author)", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse([{ id: "PRR_1", author: null }], false, null),
+      )
+      .mockResolvedValueOnce({});
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    expect(mockOctokit.graphql).toHaveBeenCalledWith(
+      expect.stringContaining("dismissPullRequestReview"),
+      expect.objectContaining({
+        reviewId: "PRR_1",
+        message: expect.stringMatching(/^Dismissing approval/),
+      }),
+    );
+    // null author means no login, so no re-review request
+    expect(mockOctokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("does not prepend mention for bot author", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse(
+          [
+            {
+              id: "PRR_1",
+              author: {
+                __typename: "Bot",
+                login: "github-actions[bot]",
+              },
+            },
+          ],
+          false,
+          null,
+        ),
+      )
+      .mockResolvedValueOnce({});
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    expect(mockOctokit.graphql).toHaveBeenCalledWith(
+      expect.stringContaining("dismissPullRequestReview"),
+      expect.objectContaining({
+        reviewId: "PRR_1",
+        message: expect.stringMatching(/^Dismissing approval/),
+      }),
+    );
+    // Bot author has no User login, so no re-review request
+    expect(mockOctokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("does nothing when no approved reviews exist", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql.mockResolvedValueOnce(
+      graphqlReviewsResponse([], false, null),
+    );
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    // Only the list query, no dismiss mutations
+    expect(mockOctokit.graphql).toHaveBeenCalledTimes(1);
+    expect(mockOctokit.rest.pulls.requestReviewers).not.toHaveBeenCalled();
+  });
+
+  it("requests re-review with deduplicated logins", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse(
+          [
+            { id: "PRR_1", author: { __typename: "User", login: "user1" } },
+            { id: "PRR_2", author: { __typename: "User", login: "user1" } },
+          ],
+          false,
+          null,
+        ),
+      )
+      .mockResolvedValueOnce({}) // dismiss PRR_1
+      .mockResolvedValueOnce({}); // dismiss PRR_2
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    expect(mockOctokit.rest.pulls.requestReviewers).toHaveBeenCalledWith(
+      expect.objectContaining({
+        reviewers: ["user1"],
+      }),
+    );
+  });
+
+  it("handles requestReviewers failure gracefully", async () => {
+    const mockOctokit = createMockOctokit();
+    mockOctokit.graphql
+      .mockResolvedValueOnce(
+        graphqlReviewsResponse(
+          [{ id: "PRR_1", author: { __typename: "User", login: "user1" } }],
+          false,
+          null,
+        ),
+      )
+      .mockResolvedValueOnce({}); // dismiss PRR_1
+    mockOctokit.rest.pulls.requestReviewers.mockRejectedValueOnce(
+      new Error("Request reviewers failed"),
+    );
+    vi.mocked(github.getOctokit).mockReturnValue(
+      mockOctokit as unknown as ReturnType<typeof github.getOctokit>,
+    );
+
+    await dismissApprovalReviews("test-token", 42);
+
+    expect(core.warning).toHaveBeenCalledWith(
+      "Failed to request reviewers: Request reviewers failed",
+    );
+  });
+});
+
+describe("runTfmigratePlan", () => {
+  let mockExecutor: MockExecutor;
+  let tempDir: string;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockExecutor = createMockExecutor();
+    tempDir = "/tmp/tfaction-test456";
+    vi.mocked(fs.mkdtempSync).mockReturnValue(tempDir);
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("returns changed=true when .tfmigrate.hcl is created from S3 template", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      'bucket = "{{s3_bucket_name_tfmigrate_history}}"\nname = "{{target}}"',
+    );
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      s3BucketNameTfmigrateHistory: "my-tfmigrate-bucket",
+    };
+    const result = await runTfmigratePlan(inputs);
+
+    expect(result.changed).toBe(true);
+    expect(result.planBinary).toBeUndefined();
+    expect(result.planJson).toBeUndefined();
+    expect(core.setOutput).toHaveBeenCalledWith("changed", "true");
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/test/working/dir/.tfmigrate.hcl",
+      'bucket = "my-tfmigrate-bucket"\nname = "aws/test/dev"',
+    );
+  });
+
+  it("returns changed=true when .tfmigrate.hcl is created from GCS template", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      'bucket = "{{gcs_bucket_name_tfmigrate_history}}"\nname = "{{target}}"',
+    );
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      gcsBucketNameTfmigrateHistory: "my-gcs-bucket",
+    };
+    const result = await runTfmigratePlan(inputs);
+
+    expect(result.changed).toBe(true);
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      "/test/working/dir/.tfmigrate.hcl",
+      'bucket = "my-gcs-bucket"\nname = "aws/test/dev"',
+    );
+  });
+
+  it("throws error when .tfmigrate.hcl does not exist and no bucket configured", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    mockExecutor.exec.mockResolvedValue(0);
+
+    const inputs = createBaseInputs(mockExecutor);
+
+    await expect(runTfmigratePlan(inputs)).rejects.toThrow(
+      ".tfmigrate.hcl is required but neither S3 nor GCS bucket is configured",
+    );
+    expect(post).toHaveBeenCalledWith(
+      expect.objectContaining({
+        templateKey: "tfmigrate-hcl-not-found",
+        vars: { tfaction_target: "aws/test/dev" },
+      }),
+    );
+  });
+
+  it("runs tfmigrate plan when .tfmigrate.hcl already exists", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    mockExecutor.exec.mockResolvedValue(0);
+    mockExecutor.getExecOutput.mockResolvedValue({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    });
+
+    const inputs = createBaseInputs(mockExecutor);
+    const result = await runTfmigratePlan(inputs);
+
+    expect(result.changed).toBeUndefined();
+    expect(result.planBinary).toBe(path.join(tempDir, "tfplan.binary"));
+    expect(result.planJson).toBe(path.join(tempDir, "tfplan.json"));
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tfmigrate",
+      ["plan", "--out", path.join(tempDir, "tfplan.binary")],
+      expect.objectContaining({
+        cwd: "/test/working/dir",
+        group: "tfmigrate plan",
+      }),
+    );
+    expect(core.setOutput).toHaveBeenCalledWith("result_summary", "no-op");
+  });
+
+  it("sets TFMIGRATE_EXEC_PATH when tfCommand is not terraform", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    mockExecutor.exec.mockResolvedValue(0);
+    mockExecutor.getExecOutput.mockResolvedValue({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    });
+
+    const inputs = {
+      ...createBaseInputs(mockExecutor),
+      tfCommand: "tofu",
+    };
+    await runTfmigratePlan(inputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tfmigrate",
+      expect.any(Array),
+      expect.objectContaining({
+        env: expect.objectContaining({
+          TFMIGRATE_EXEC_PATH: "tofu",
+        }),
+      }),
+    );
+  });
+
+  it("runs terraform show to convert plan to JSON", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    mockExecutor.exec.mockResolvedValue(0);
+    mockExecutor.getExecOutput.mockResolvedValue({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    });
+
+    const inputs = createBaseInputs(mockExecutor);
+    await runTfmigratePlan(inputs);
+
+    expect(mockExecutor.getExecOutput).toHaveBeenCalledWith(
+      "terraform",
+      ["show", "-json", path.join(tempDir, "tfplan.binary")],
+      expect.objectContaining({
+        cwd: "/test/working/dir",
+        silent: true,
+      }),
+    );
+    expect(fs.writeFileSync).toHaveBeenCalledWith(
+      path.join(tempDir, "tfplan.json"),
+      '{"resource_changes": []}',
+    );
+  });
+});
+
+describe("getResultSummary", () => {
+  it("returns no-op when resource_changes is empty", () => {
+    expect(getResultSummary('{"resource_changes": []}')).toBe("no-op");
+  });
+
+  it("returns no-op when resource_changes is undefined", () => {
+    expect(getResultSummary("{}")).toBe("no-op");
+  });
+
+  it("returns no-op when resource_changes is null", () => {
+    expect(getResultSummary('{"resource_changes": null}')).toBe("no-op");
+  });
+
+  it("returns no-op when all actions are no-op", () => {
+    const plan = {
+      resource_changes: [
+        { change: { actions: ["no-op"] } },
+        { change: { actions: ["no-op"] } },
+      ],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("no-op");
+  });
+
+  it("returns no-op when all actions are read", () => {
+    const plan = {
+      resource_changes: [{ change: { actions: ["read"] } }],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("no-op");
+  });
+
+  it("returns create when actions include create", () => {
+    const plan = {
+      resource_changes: [{ change: { actions: ["create"] } }],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("create");
+  });
+
+  it("returns update when actions include both create and update resources", () => {
+    const plan = {
+      resource_changes: [
+        { change: { actions: ["create"] } },
+        { change: { actions: ["update"] } },
+      ],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("update");
+  });
+
+  it("returns update when actions include update", () => {
+    const plan = {
+      resource_changes: [{ change: { actions: ["update"] } }],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("update");
+  });
+
+  it("returns delete when actions include delete", () => {
+    const plan = {
+      resource_changes: [{ change: { actions: ["delete"] } }],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("delete");
+  });
+
+  it("returns delete for delete-create recreate", () => {
+    const plan = {
+      resource_changes: [{ change: { actions: ["delete", "create"] } }],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("delete");
+  });
+
+  it("returns delete for create-delete recreate", () => {
+    const plan = {
+      resource_changes: [{ change: { actions: ["create", "delete"] } }],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("delete");
+  });
+
+  it("returns delete when mix of update and delete", () => {
+    const plan = {
+      resource_changes: [
+        { change: { actions: ["update"] } },
+        { change: { actions: ["delete"] } },
+      ],
+    };
+    expect(getResultSummary(JSON.stringify(plan))).toBe("delete");
+  });
+});
+
+describe("main", () => {
+  let mockExecutor: MockExecutor;
+  const mockGetConfig = vi.fn();
+  const mockNewExecutor = vi.fn();
+  const mockConftestRun = vi.fn();
+
+  beforeEach(async () => {
+    vi.clearAllMocks();
+    mockExecutor = createMockExecutor();
+
+    const lib = await import("../../lib");
+    vi.mocked(lib.getConfig).mockImplementation(mockGetConfig);
+
+    const aquaMod = await import("../../aqua");
+    vi.mocked(aquaMod.NewExecutor).mockImplementation(mockNewExecutor);
+
+    const conftest = await import("../../conftest");
+    vi.mocked(conftest.run).mockImplementation(mockConftestRun);
+
+    mockNewExecutor.mockResolvedValue(mockExecutor);
+    mockGetConfig.mockResolvedValue({
+      git_root_dir: "/git/root",
+      auto_apps: {
+        logins: ["renovate[bot]", "dependabot[bot]"],
+        allow_auto_merge_change: false,
+      },
+      target_groups: [],
+      working_directory_file: ".tfaction.yaml",
+      module_file: "tfaction_module.yaml",
+      tflint: { enabled: false, fix: false },
+      trivy: { enabled: false },
+      terraform_command: "terraform",
+    });
+
+    vi.mocked(fs.mkdtempSync).mockReturnValue("/tmp/tfaction-main-test");
+  });
+
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  it("skips plan for module type and returns early", async () => {
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "modules/vpc",
+      target: "modules/vpc",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+      type: "module",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "terraform",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(core.info).toHaveBeenCalledWith(
+      "Skipping plan for module target: modules/vpc",
+    );
+    // getConfig should not be called since we return early
+    expect(mockGetConfig).not.toHaveBeenCalled();
+  });
+
+  it("throws error when jobType is undefined", async () => {
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: undefined as unknown as string,
+    };
+
+    await expect(main(targetConfig, runInputs)).rejects.toThrow(
+      "TFACTION_JOB_TYPE is not set",
+    );
+  });
+
+  it("throws error when jobType is empty string", async () => {
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "",
+    };
+
+    await expect(main(targetConfig, runInputs)).rejects.toThrow(
+      "TFACTION_JOB_TYPE is not set",
+    );
+  });
+
+  it("throws error for unknown jobType", async () => {
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "unknown",
+    };
+
+    await expect(main(targetConfig, runInputs)).rejects.toThrow(
+      "Unknown TFACTION_JOB_TYPE: unknown",
+    );
+  });
+
+  it("runs terraform plan for terraform job type", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "terraform",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "terraform",
+      expect.arrayContaining(["plan"]),
+      expect.any(Object),
+    );
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tfcmt",
+      expect.arrayContaining(["plan", "--"]),
+      expect.any(Object),
+    );
+    expect(mockConftestRun).toHaveBeenCalled();
+  });
+
+  it("runs tfmigrate plan for tfmigrate job type when .tfmigrate.hcl exists", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(true);
+    mockExecutor.exec.mockResolvedValue(0);
+    mockExecutor.getExecOutput.mockResolvedValue({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    });
+
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "tfmigrate",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tfmigrate",
+      expect.arrayContaining(["plan"]),
+      expect.any(Object),
+    );
+    expect(mockConftestRun).toHaveBeenCalled();
+  });
+
+  it("skips conftest when tfmigrate creates .tfmigrate.hcl", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    vi.mocked(fs.readFileSync).mockReturnValue(
+      'bucket = "{{s3_bucket_name_tfmigrate_history}}"',
+    );
+
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+      s3_bucket_name_tfmigrate_history: "my-bucket",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "tfmigrate",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(mockConftestRun).not.toHaveBeenCalled();
+  });
+
+  it("uses target config destroy setting", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+      destroy: true,
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "terraform",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "terraform",
+      expect.arrayContaining(["-destroy"]),
+      expect.any(Object),
+    );
+  });
+
+  it("passes driftIssueNumber to runTerraformPlan", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "terraform",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "terraform",
+      driftIssueNumber: "789",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tfcmt",
+      expect.arrayContaining([
+        "-config",
+        expect.stringContaining("tfcmt-drift.yaml"),
+      ]),
+      expect.any(Object),
+    );
+  });
+
+  it("uses target config terraform_command", async () => {
+    vi.mocked(fs.existsSync).mockReturnValue(false);
+    mockExecutor.exec.mockResolvedValueOnce(0); // terraform plan
+    mockExecutor.getExecOutput.mockResolvedValueOnce({
+      exitCode: 0,
+      stdout: '{"resource_changes": []}',
+      stderr: "",
+    }); // terraform show
+
+    const targetConfig: getTargetConfig.TargetConfig = {
+      working_directory: "aws/test",
+      target: "aws/test/dev",
+      providers_lock_opts: "",
+      enable_tflint: false,
+      enable_trivy: false,
+      tflint_fix: false,
+      terraform_command: "tofu",
+    };
+    const runInputs: RunInputs = {
+      githubToken: "test-token",
+      jobType: "terraform",
+    };
+
+    await main(targetConfig, runInputs);
+
+    expect(mockExecutor.exec).toHaveBeenCalledWith(
+      "tofu",
+      expect.arrayContaining(["plan"]),
+      expect.any(Object),
+    );
+  });
+});

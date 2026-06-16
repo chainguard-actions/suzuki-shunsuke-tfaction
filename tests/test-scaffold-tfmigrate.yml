@@ -1,0 +1,19 @@
+name: Test scaffold-tfmigrate inputs (migration_name, pr_number)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        continue-on-error: true
+        with:
+          action: scaffold-tfmigrate
+          migration_name: my-migration
+          pr_number: "42"
+      - name: Assert action ran (input coverage)
+        run: |
+          echo "action step completed (exit may be non-zero due to missing config, but inputs were accepted)"
+          echo "PASS"

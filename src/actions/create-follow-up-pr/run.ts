@@ -1,0 +1,485 @@
+import * as core from "@actions/core";
+import * as github from "@actions/github";
+import * as fs from "fs";
+import * as path from "path";
+import Handlebars from "handlebars";
+import { z } from "zod";
+
+import * as lib from "../../lib";
+import * as types from "../../lib/types";
+import * as commit from "../../commit";
+import { getTargetConfig, TargetConfig } from "../get-target-config";
+import { post } from "../../comment";
+
+export const PRData = z.object({
+  body: z.string().nullable(),
+  assignees: z.array(
+    z.object({
+      login: z.string(),
+    }),
+  ),
+});
+
+export const escapeRegExp = (str: string): string => {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+};
+
+type Octokit = ReturnType<typeof github.getOctokit>;
+
+export interface GroupLabelParams {
+  octokit: Octokit;
+  owner: string;
+  repo: string;
+  groupLabelEnabled: boolean;
+  groupLabelPrefix: string;
+  prNumber: string;
+  tempDir: string;
+}
+
+export const getOrCreateGroupLabel = async (
+  params: GroupLabelParams,
+): Promise<string> => {
+  const {
+    octokit,
+    owner,
+    repo,
+    groupLabelEnabled,
+    groupLabelPrefix,
+    prNumber,
+    tempDir,
+  } = params;
+
+  if (!groupLabelEnabled || !tempDir) {
+    return "";
+  }
+
+  const labelsFilePath = `${tempDir}/labels.txt`;
+  let labels: string[] = [];
+  if (fs.existsSync(labelsFilePath)) {
+    const content = fs.readFileSync(labelsFilePath, "utf8");
+    labels = content.split("\n").filter((l) => l.length > 0);
+  }
+
+  const groupLabelPattern = new RegExp(
+    `${escapeRegExp(groupLabelPrefix)}[0-9]+`,
+  );
+  let groupLabel = labels.find((label) => groupLabelPattern.test(label)) || "";
+
+  if (!groupLabel) {
+    groupLabel = `${groupLabelPrefix}${prNumber}`;
+    try {
+      await octokit.rest.issues.createLabel({
+        owner,
+        repo,
+        name: groupLabel,
+      });
+      core.info(`Created label: ${groupLabel}`);
+    } catch (error: unknown) {
+      if (
+        error instanceof Error &&
+        "status" in error &&
+        (error as { status: number }).status === 422
+      ) {
+        core.info(`Label ${groupLabel} already exists`);
+      } else {
+        throw error;
+      }
+    }
+  }
+
+  if (!labels.includes(groupLabel)) {
+    await octokit.rest.issues.addLabels({
+      owner,
+      repo,
+      issue_number: parseInt(prNumber, 10),
+      labels: [groupLabel],
+    });
+    core.info(`Added label ${groupLabel} to PR #${prNumber}`);
+  }
+
+  return groupLabel;
+};
+
+export interface PRParams {
+  branch: string;
+  commitMessage: string;
+  prTitle: string;
+  prBody: string;
+  assignees: string[];
+  mentions: string;
+  comment: string;
+}
+
+export interface GeneratePRParamsInput {
+  prNumber: string;
+  target: string;
+  tempDir: string;
+  actor: string;
+  prAuthor: string;
+  runURL: string;
+}
+
+export const generatePRParams = (
+  cfg: types.Config,
+  targetConfig: TargetConfig,
+  input: GeneratePRParamsInput,
+): PRParams => {
+  const { prNumber, target, tempDir, actor, prAuthor, runURL } = input;
+
+  const branch =
+    `follow-up-${prNumber}-${target}-${new Date().toISOString().replace(/[-:]/g, "").replace(/\..+/, "")}`.replaceAll(
+      "/",
+      "__",
+    );
+  const commitMessage = `chore: create a commit to open follow up pull request
+Follow up #${prNumber}
+${runURL}`;
+
+  const assignees = new Set<string>();
+  if (prAuthor && !prAuthor.endsWith("[bot]")) {
+    assignees.add(prAuthor);
+  }
+  if (actor && !actor.endsWith("[bot]") && actor !== prAuthor) {
+    assignees.add(actor);
+  }
+
+  const assigneesArray = [...assignees];
+  const mentions = assigneesArray.map((a) => `@${a}`).join(" ");
+
+  let defaultPRBody = `This pull request was created automatically to follow up the failure of apply.
+- Follow up #${prNumber} ([failed workflow](${runURL}))
+
+Please write the description of this pull request below.
+
+## Why did the terraform apply fail?
+
+## How do you fix the problem?
+
+`;
+
+  const vars = {
+    target: target,
+    workingDir: targetConfig.working_directory,
+    actor,
+    run_url: runURL,
+    pr_number: prNumber,
+    mentions: mentions,
+    original_pr_body: "",
+  };
+
+  if (tempDir) {
+    const prJsonPath = `${tempDir}/pr.json`;
+    if (fs.existsSync(prJsonPath)) {
+      try {
+        const prDataRaw = JSON.parse(fs.readFileSync(prJsonPath, "utf8"));
+        const prData = PRData.parse(prDataRaw);
+        if (prData.assignees) {
+          for (const assignee of prData.assignees) {
+            assignees.add(assignee.login);
+          }
+        }
+        defaultPRBody += `
+---
+
+<details>
+<summary>Original PR description</summary>
+
+${prData.body}
+
+</details>
+`;
+        vars.original_pr_body = prData.body || "";
+      } catch (error) {
+        console.error("Failed to read or parse pr.json:", error);
+      }
+    }
+  }
+
+  const prTitle = cfg?.follow_up_pr?.pull_request?.title
+    ? Handlebars.compile(cfg?.follow_up_pr?.pull_request?.title)(vars)
+    : `chore(${target}): follow up #${prNumber}`;
+
+  const prBody = cfg?.follow_up_pr?.pull_request?.body
+    ? Handlebars.compile(cfg?.follow_up_pr?.pull_request?.body)(vars)
+    : defaultPRBody;
+
+  const comment = cfg?.follow_up_pr?.pull_request?.comment
+    ? Handlebars.compile(cfg?.follow_up_pr?.pull_request?.comment)(vars)
+    : `${mentions}
+This pull request was created because \`terraform apply\` failed.
+
+- #${prNumber}
+
+Please handle this pull request.
+
+1. Check the error message #${prNumber}
+1. Check the result of \`terraform plan\`
+1. Add commits to this pull request and fix the problem if needed
+1. Review and merge this pull request`;
+
+  return {
+    branch,
+    commitMessage,
+    prTitle,
+    prBody,
+    comment,
+    assignees: assigneesArray,
+    mentions,
+  };
+};
+
+export const createFailedPrsFile = (
+  /** Absolute path or relative path from github.workspace */
+  workingDir: string,
+  prNumber: string,
+  githubServerUrl: string,
+  repository: string,
+): string => {
+  const tfactionDir = path.join(workingDir, ".tfaction");
+  const failedPrsFile = path.join(tfactionDir, "failed-prs");
+
+  if (!fs.existsSync(tfactionDir)) {
+    fs.mkdirSync(tfactionDir, { recursive: true });
+  }
+
+  if (!fs.existsSync(failedPrsFile)) {
+    fs.writeFileSync(
+      failedPrsFile,
+      `# This file is created and updated by tfaction for follow up pull requests.
+# You can remove this file safely.
+`,
+    );
+  }
+
+  const prUrl = `${githubServerUrl}/${repository}/pull/${prNumber}`;
+  fs.appendFileSync(failedPrsFile, `${prUrl}\n`);
+  core.info(`Updated ${failedPrsFile} with PR URL: ${prUrl}`);
+
+  return failedPrsFile;
+};
+
+export interface SkipCreateCommentParams {
+  octokit: Octokit;
+  prNumberInt: number;
+  repository: string;
+  branch: string;
+  prTitle: string;
+  prNumber: string;
+  draftPr: boolean;
+  groupLabelEnabled: boolean;
+  groupLabel: string;
+  target: string;
+  mentions: string;
+}
+
+export const postSkipCreateComment = async (
+  params: SkipCreateCommentParams,
+): Promise<void> => {
+  const {
+    octokit,
+    prNumberInt,
+    repository,
+    branch,
+    prTitle,
+    prNumber,
+    draftPr,
+    groupLabelEnabled,
+    groupLabel,
+    target,
+    mentions,
+  } = params;
+
+  const createOpts: string[] = [
+    "-R",
+    repository,
+    "-H",
+    branch,
+    "-t",
+    `"${prTitle}"`,
+    "-b",
+    `"Follow up #${prNumber}"`,
+  ];
+
+  if (draftPr) {
+    createOpts.push("-d");
+  }
+
+  if (groupLabelEnabled && groupLabel) {
+    createOpts.push("-l", groupLabel);
+  }
+
+  const optsString = createOpts.join(" ");
+
+  await post({
+    octokit,
+    prNumber: prNumberInt,
+    templateKey: "skip-create-follow-up-pr",
+    vars: {
+      tfaction_target: target,
+      mentions: mentions,
+      opts: optsString,
+    },
+  });
+  core.info("Posted skip-create-follow-up-pr comment");
+};
+
+export interface RunInput {
+  githubToken: string;
+  csmAppId: string;
+  csmAppPrivateKey: string;
+  actor: string;
+  prAuthor: string;
+  target: string;
+  /** A relative path from git root directory to working directory */
+  workingDir: string;
+  isApply: boolean;
+  prNumber: string;
+  tempDir: string;
+  repository: string;
+  runURL: string;
+  githubServerUrl: string;
+}
+
+export const run = async (input: RunInput): Promise<void> => {
+  const {
+    githubToken,
+    csmAppId,
+    csmAppPrivateKey,
+    actor,
+    prAuthor,
+    target: envTarget,
+    workingDir: envWorkingDir,
+    isApply,
+    prNumber,
+    tempDir,
+    repository,
+    runURL,
+    githubServerUrl,
+  } = input;
+
+  const octokit = github.getOctokit(githubToken);
+
+  const config = await lib.getConfig();
+
+  const skipCreatePr = config.skip_create_pr;
+  const draftPr = config.draft_pr;
+  const groupLabelEnabled = config.follow_up_pr?.group_label?.enabled ?? false;
+  const groupLabelPrefix =
+    config.follow_up_pr?.group_label?.prefix ?? "tfaction:follow-up-pr-group/";
+  const csmActionsServerRepository =
+    config.csm_actions?.server_repository ?? "";
+  const csmPRBaseBranch = config.csm_actions?.pull_request?.base_branch ?? "";
+
+  const jobType = lib.getJobType();
+
+  // Get target config
+  const targetConfig = await getTargetConfig(
+    {
+      target: envTarget,
+      workingDir: envWorkingDir,
+      isApply,
+      jobType,
+    },
+    config,
+  );
+
+  /** Absolute path to working directory */
+  const workingDir = path.join(
+    config.git_root_dir,
+    targetConfig.working_directory,
+  );
+  const target = targetConfig.target;
+
+  const { owner, repo } = github.context.repo;
+
+  // Get or create group label
+  const groupLabel = await getOrCreateGroupLabel({
+    octokit,
+    owner,
+    repo,
+    groupLabelEnabled,
+    groupLabelPrefix,
+    prNumber,
+    tempDir,
+  });
+
+  // Generate PR parameters
+  const prParams = generatePRParams(config, targetConfig, {
+    prNumber,
+    target,
+    tempDir,
+    actor,
+    prAuthor,
+    runURL,
+  });
+
+  // Create failed-prs file
+  const failedPrsFile = path.relative(
+    config.git_root_dir,
+    createFailedPrsFile(workingDir, prNumber, githubServerUrl, repository),
+  );
+
+  const labels: string[] = [];
+  if (groupLabel) {
+    labels.push(groupLabel);
+  }
+  if (jobType === "tfmigrate") {
+    labels.push(config.label_prefixes.tfmigrate + target);
+  }
+
+  // Create commit and PR
+  const followUpPrUrl = await commit.create({
+    commitMessage: prParams.commitMessage,
+    githubToken,
+    rootDir: config.git_root_dir,
+    files: new Set([failedPrsFile]),
+    serverRepository: csmActionsServerRepository,
+    appId: csmAppId,
+    appPrivateKey: csmAppPrivateKey,
+    branch: prParams.branch,
+    pr: skipCreatePr
+      ? undefined
+      : {
+          title: prParams.prTitle,
+          body: prParams.prBody,
+          base: csmPRBaseBranch,
+          labels: labels,
+          assignees:
+            prParams.assignees.length > 0 ? prParams.assignees : undefined,
+          draft: draftPr,
+          comment: prParams.comment,
+        },
+  });
+
+  // Post comment to original PR (GitHub API only)
+  if (followUpPrUrl) {
+    await post({
+      octokit,
+      prNumber: parseInt(prNumber, 10),
+      templateKey: "create-follow-up-pr",
+      vars: {
+        tfaction_target: target,
+        mentions: prParams.mentions,
+        follow_up_pr_url: followUpPrUrl,
+      },
+    });
+    core.info("Posted comment to the original PR");
+  }
+
+  // Post skip-create comment if skip_create_pr is true
+  if (skipCreatePr) {
+    await postSkipCreateComment({
+      octokit,
+      prNumberInt: parseInt(prNumber, 10),
+      repository,
+      branch: prParams.branch,
+      prTitle: prParams.prTitle,
+      prNumber,
+      draftPr,
+      groupLabelEnabled,
+      groupLabel,
+      target,
+      mentions: prParams.mentions,
+    });
+  }
+};
