@@ -1,0 +1,182 @@
+import * as core from "@actions/core";
+import * as github from "@actions/github";
+import * as path from "path";
+
+import * as lib from "../../lib";
+import * as env from "../../lib/env";
+import * as input from "../../lib/input";
+import * as aqua from "../../aqua";
+import * as ciinfo from "../../ci-info";
+import { getTargetConfig } from "../get-target-config";
+import * as aquaUpdateChecksum from "./aqua-update-checksum";
+import {
+  isPullRequestEvent as isPullRequestEventFn,
+  shouldSkipCIInfo as shouldSkipCIInfoFn,
+  checkLatestCommit as checkLatestCommitFn,
+} from "./run";
+import { updatePRBranch } from "@suzuki-shunsuke/update-pr-branch";
+
+// Check if this is a pull request event
+const isPullRequestEvent = (): boolean => {
+  return isPullRequestEventFn(github.context.eventName);
+};
+
+// Check if ci-info should be skipped
+const shouldSkipCIInfo = (): boolean => {
+  return shouldSkipCIInfoFn(github.context.eventName);
+};
+
+// Check if the PR head SHA is the latest
+const checkLatestCommit = (latestHeadSHA: string): void => {
+  checkLatestCommitFn(github.context.payload.pull_request, latestHeadSHA);
+};
+
+// Add label to PR
+const addLabelToPR = async (
+  octokit: ReturnType<typeof github.getOctokit>,
+  target: string,
+  prNumber: number,
+): Promise<void> => {
+  if (prNumber <= 0) {
+    throw new Error("Failed to get a pull request number");
+  }
+  if (!target) {
+    return;
+  }
+  try {
+    await octokit.rest.issues.addLabels({
+      owner: github.context.repo.owner,
+      repo: github.context.repo.repo,
+      issue_number: prNumber,
+      labels: [target],
+    });
+    core.info(`Added label "${target}" to PR #${prNumber}`);
+  } catch (error) {
+    core.warning(`Failed to add label to PR: ${error}`);
+  }
+};
+
+export const main = async () => {
+  core.exportVariable("AQUA_GLOBAL_CONFIG", lib.aquaGlobalConfig);
+  const githubToken = input.getRequiredGitHubToken();
+
+  const octokit = github.getOctokit(githubToken);
+  const isPR = isPullRequestEvent();
+
+  const config = await lib.getConfig();
+  const targetConfig = await getTargetConfig(
+    {
+      target: env.all.TFACTION_TARGET,
+      workingDir: env.all.TFACTION_WORKING_DIR,
+      isApply: env.isApply,
+      jobType: lib.getJobType(),
+    },
+    config,
+  );
+  /** absolute path to working directory */
+  const workingDir = path.join(
+    config.git_root_dir,
+    targetConfig.working_directory,
+  );
+
+  if (!shouldSkipCIInfo()) {
+    const ci = await ciinfo.main();
+    if (isPR) {
+      core.info("Checking if commit is latest...");
+
+      checkLatestCommit(ci.pr?.data.head.sha ?? "");
+
+      const prNumber = github.context.payload.pull_request?.number ?? 0;
+
+      let csmServerRepoOwner = github.context.repo.owner;
+      let csmServerRepoName = config.csm_actions?.server_repository ?? "";
+      if (csmServerRepoName.includes("/")) {
+        csmServerRepoOwner = csmServerRepoName.split("/")[0];
+        csmServerRepoName = csmServerRepoName.split("/")[1];
+      }
+
+      const updateResult = await updatePRBranch({
+        files: new Set([targetConfig.working_directory + "/**"]),
+        repoOwner: github.context.repo.owner,
+        repoName: github.context.repo.repo,
+        prNumber: prNumber,
+        maxBehindBy: -1,
+        githubToken: githubToken,
+        defaultGitHubToken: "",
+        appID: "",
+        appPrivateKey: "",
+        csmServerRepoOwner: csmServerRepoOwner,
+        csmServerRepoName: csmServerRepoName,
+        csmAppID: input.csmAppId,
+        csmAppPrivateKey: input.csmAppPrivateKey,
+        baseBranch: github.context.payload.pull_request?.base?.ref ?? "",
+        headBranch: github.context.payload.pull_request?.head?.ref ?? "",
+        contextPRNumber: prNumber,
+        updateIf300Files: true,
+      });
+      if (updateResult.updated) {
+        throw new Error("PR branch is updated");
+      }
+
+      // Add label to PR (only for PRs)
+      await addLabelToPR(
+        octokit,
+        targetConfig.target,
+        github.context.payload.pull_request?.number ?? 0,
+      );
+    }
+  }
+
+  // Set environment variables from target config
+  core.exportVariable("TFACTION_WORKING_DIR", targetConfig.working_directory);
+  core.exportVariable("TFACTION_TARGET", targetConfig.target);
+  if (targetConfig.env) {
+    for (const [key, value] of Object.entries(targetConfig.env)) {
+      core.exportVariable(key, value);
+    }
+  }
+
+  // Set outputs from target config
+  for (const [key, value] of Object.entries(targetConfig)) {
+    if (
+      key !== "env" &&
+      key !== "target" &&
+      key !== "secretsConfig" &&
+      value !== undefined
+    ) {
+      core.setOutput(key, value);
+    }
+  }
+
+  const executor = await aqua.NewExecutor({
+    githubToken: githubToken,
+    cwd: workingDir,
+  });
+
+  if (isPR && config.aqua?.update_checksum?.enabled) {
+    try {
+      core.info("updating checksum");
+      await aquaUpdateChecksum.main(
+        executor,
+        path.relative(config.workspace, workingDir),
+        config,
+        {
+          githubToken: githubToken,
+          csmAppId: input.csmAppId,
+          csmAppPrivateKey: input.csmAppPrivateKey,
+        },
+      );
+    } catch (error) {
+      // aqua-update-checksum throws when file is updated, which is expected
+      if (error instanceof Error && error.message.includes("is updated")) {
+        throw error;
+      }
+      if (error instanceof Error && error.message.includes("isn't latest")) {
+        throw error;
+      }
+      throw error;
+    }
+  }
+
+  core.info("Setup completed successfully");
+};

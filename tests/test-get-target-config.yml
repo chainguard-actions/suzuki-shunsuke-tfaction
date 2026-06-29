@@ -1,0 +1,54 @@
+name: Test get-target-config action
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+      # tfaction env vars
+      TFACTION_CONFIG: ${{ github.workspace }}/tests/tfaction-root.yaml
+      TFACTION_WORKING_DIR: tests/foo
+      TFACTION_JOB_TYPE: terraform
+      TFACTION_IS_APPLY: "false"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        with:
+          action: get-target-config
+
+      - name: Assert working_directory output
+        env:
+          ACTUAL: ${{ steps.action.outputs.working_directory }}
+        run: |
+          echo "actual working_directory: $ACTUAL"
+          if [ "$ACTUAL" != "tests/foo" ]; then
+            echo "FAIL: expected 'tests/foo' but got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Assert aws_region output
+        env:
+          ACTUAL: ${{ steps.action.outputs.aws_region }}
+        run: |
+          echo "actual aws_region: $ACTUAL"
+          if [ "$ACTUAL" != "ap-northeast-1" ]; then
+            echo "FAIL: expected 'ap-northeast-1' but got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"
+
+      - name: Assert terraform_command output
+        env:
+          ACTUAL: ${{ steps.action.outputs.terraform_command }}
+        run: |
+          echo "actual terraform_command: $ACTUAL"
+          if [ "$ACTUAL" != "terraform" ]; then
+            echo "FAIL: expected 'terraform' but got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS"

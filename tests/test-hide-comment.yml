@@ -1,0 +1,33 @@
+name: Test hide-comment action with if input
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    env:
+      GITHUB_REF: refs/heads/main
+      GITHUB_EVENT_NAME: push
+      TFACTION_CONFIG: ${{ github.workspace }}/tests/tfaction-root.yaml
+      TFACTION_WORKING_DIR: tests/foo
+      TFACTION_JOB_TYPE: terraform
+      TFACTION_IS_APPLY: "false"
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        with:
+          action: hide-comment
+          if: "Comment.HasMeta"
+        continue-on-error: true
+
+      - name: Assert action was invoked with if input
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "skipped" ]; then
+            echo "FAIL: action was skipped, expected it to run"
+            exit 1
+          fi
+          echo "PASS: action ran with if input"
