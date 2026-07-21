@@ -1,0 +1,5 @@
+plan_workflow_name: plan.yaml
+target_groups:
+  - working_directory: "aws/foo/**"
+    template_dir: "templates/github"
+    aws_region: "us-east-1"

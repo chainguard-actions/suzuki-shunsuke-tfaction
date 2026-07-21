@@ -1,0 +1,28 @@
+name: Test apply-label action with result and pr_number inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        with:
+          action: apply-label
+          result: skipped
+          pr_number: "1"
+        continue-on-error: true
+
+      # When result is "skipped", apply-label does nothing and exits successfully
+      - name: Assert action succeeded with skipped result
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" != "success" ]; then
+            echo "FAIL: expected action to succeed when result=skipped, got outcome=$OUTCOME"
+            exit 1
+          fi
+          echo "PASS: action correctly handled skipped result"

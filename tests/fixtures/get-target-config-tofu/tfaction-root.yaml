@@ -1,0 +1,10 @@
+plan_workflow_name: plan.yaml
+terraform_command: tofu
+tflint:
+  enabled: false
+trivy:
+  enabled: false
+target_groups:
+  - working_directory: "tests/fixtures/get-target-config-tofu/**"
+    aws_region: "eu-west-1"
+    aws_role_session_name: "my-session"

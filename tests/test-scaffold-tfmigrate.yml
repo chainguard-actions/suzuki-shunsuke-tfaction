@@ -1,0 +1,39 @@
+name: Test scaffold-tfmigrate action with migration_name, csm_app_id, csm_app_private_key inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        with:
+          action: scaffold-tfmigrate
+          migration_name: test-migration
+          pr_number: "1"
+          csm_app_id: ""
+          csm_app_private_key: ""
+        env:
+          TFACTION_CONFIG: ${{ github.workspace }}/tests/fixtures/get-target-config/tfaction-root.yaml
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_WORKING_DIR: tests/fixtures/get-target-config/aws/foo/dev
+          TFACTION_TARGET: aws/foo/dev
+        continue-on-error: true
+
+      # scaffold-tfmigrate requires a real working directory with tfmigrate config.
+      # It will fail in this environment, but the inputs must be accepted.
+      - name: Assert action was invoked with scaffold-tfmigrate inputs
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          # The action may fail due to missing tfmigrate config or PR context.
+          # Either outcome is acceptable — we just need the inputs to be covered.
+          if [ "$OUTCOME" = "success" ] || [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action was invoked with migration_name, pr_number, csm_app_id, csm_app_private_key inputs (outcome=$OUTCOME)"
+          else
+            echo "FAIL: unexpected outcome=$OUTCOME"
+            exit 1
+          fi

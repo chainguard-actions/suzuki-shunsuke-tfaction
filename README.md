@@ -1,18 +1,34 @@
-# suzuki-shunsuke/tfaction
+# tfaction
 
-JavaScript Action
+[Website](https://suzuki-shunsuke.github.io/tfaction/docs/) [![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/suzuki-shunsuke/tfaction)
 
-Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at [https://github.com/suzuki-shunsuke/tfaction](https://github.com/suzuki-shunsuke/tfaction).
+Framework for Monorepo to build high level Terraform Workflows by GitHub Actions
 
-## Versions
+## Who uses tfaction?
 
-| Version | Tag | Upstream commit |
-|---------|-----|-----------------|
-| v2.0.0-8 | [`v2.0.0-8`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.0-8) | [`f24a403`](https://github.com/suzuki-shunsuke/tfaction/commit/f24a40308c268d6597a72eab8da2edf9cc87da1d) |
-| v2.0.1 | [`v2.0.1`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.1) | [`6ad59de`](https://github.com/suzuki-shunsuke/tfaction/commit/6ad59de70ee7e9c0a11c665c4439b5c148c74328) |
-| v2.0.2 | [`v2.0.2`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.2) | [`92afb0a`](https://github.com/suzuki-shunsuke/tfaction/commit/92afb0ac879cf9c560fe1160a9bbde50b11ff119) |
-| v2.0.3 | [`v2.0.3`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.3) | [`45bd9d6`](https://github.com/suzuki-shunsuke/tfaction/commit/45bd9d6d7f1c396b5f1ca6f4d31dd8247e812539) |
-| v2.0.4 | [`v2.0.4`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.4) | [`0627b0a`](https://github.com/suzuki-shunsuke/tfaction/commit/0627b0a1dfec9479a3fa73a5831be7979661b7eb) |
+> [!NOTE]
+> If you want to add your company or organization to the list, please send a pull request or send a comment to the [GitHub Discussion](https://github.com/suzuki-shunsuke/tfaction/discussions/1280)!
+
+- [Topotal, Inc.](https://topotal.com/)
+- Recruit Co., Ltd. - [StudySapuri](https://brand.studysapuri.jp/) and [Quipper](https://www.quipper.com/) product team
+  - [Terraform の CI を AWS CodeBuild から GitHub Actions + tfaction に移行しました](https://blog.studysapuri.jp/entry/2022/02/04/080000)
+  - [Migrate Terraform CI from AWS CodeBuild to GitHub Actions](https://devs.quipper.com/2022/02/25/terraform-github-actions.html)
+- [Henry, Inc.](https://corp.henry-app.jp/)
+  - Contributed to make [tfaction](https://github.com/suzuki-shunsuke/tfaction/releases/tag/v0.5.16) and [tfmigrate](https://github.com/minamijoyo/tfmigrate/releases/tag/v0.3.7) GoogleCloud-ready
+- [Macbee Planet, Inc.](https://macbee-planet.com)
+- [Gunosy Inc.](https://gunosy.co.jp/)
+  - [2023-12-14 tfaction を導入したら便利だった話](https://tech.gunosy.io/entry/tfaction_ci_cd)
+- [Luup, Inc.](https://luup.sc/)
+  - [2022-12-18 tfaction導入のお話](https://zenn.dev/luup_developers/articles/sre-nakanishi-20221218)
+- [Wantedly, Inc.](https://wantedlyinc.com/)
+- [newmo, Inc.](https://newmo.me/)
+  - [tfactionを使ったGitHub Actions Workflowの構築](https://tech.newmo.me/entry/tfaction-github-terraform-workflow)
+- [tacoms Inc.](https://www.tacoms-inc.com/)
+  - [tfactionを使ってTerraformの実行を自動化した！！](https://zenn.dev/tacoms/articles/988e4c7efc8cf3)
+- [LayerX Inc.](https://layerx.co.jp/)
+  - [コンパウンドスタートアップのためのスケーラブルでセキュアなInfrastructure as Codeパイプラインを考える](https://speakerdeck.com/yuyatakeyama/scalable-and-secure-infrastructure-as-code-pipeline-for-a-compound-startup-c8f5baa6-b9ac-48e5-a680-f8830004ed7f)
+- [estie, Inc.](https://www.estie.jp/)
+  - [Terraformをモノレポ化した話 — tfactionを使ったプロダクト横断IaC運用の実践](https://www.estie.jp/blog/entry/2026/02/03/102141)
 
 ## Privacy
 

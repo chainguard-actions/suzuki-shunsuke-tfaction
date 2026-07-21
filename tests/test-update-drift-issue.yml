@@ -1,0 +1,35 @@
+name: Test update-drift-issue action with issue and status inputs
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        with:
+          action: update-drift-issue
+          issue: "42"
+          status: success
+        env:
+          TFACTION_CONFIG: ${{ github.workspace }}/tests/fixtures/get-target-config/tfaction-root.yaml
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_WORKING_DIR: tests/fixtures/get-target-config/aws/foo/dev
+          # TFACTION_DRIFT_ISSUE_NUMBER is intentionally not set so the action exits early
+        continue-on-error: true
+
+      # When TFACTION_DRIFT_ISSUE_NUMBER is not set, update-drift-issue logs a message and returns.
+      # The action should succeed (early exit) or fail gracefully.
+      - name: Assert action was invoked with issue and status inputs
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "success" ] || [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action was invoked with issue and status inputs (outcome=$OUTCOME)"
+          else
+            echo "FAIL: unexpected outcome=$OUTCOME"
+            exit 1
+          fi

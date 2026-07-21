@@ -1,0 +1,62 @@
+name: Test get-target-config action
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        with:
+          action: get-target-config
+        env:
+          TFACTION_CONFIG: ${{ github.workspace }}/tests/fixtures/get-target-config/tfaction-root.yaml
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_WORKING_DIR: tests/fixtures/get-target-config/aws/foo/dev
+          TFACTION_IS_APPLY: "false"
+
+      - name: Assert working_directory output
+        env:
+          ACTUAL: ${{ steps.action.outputs.working_directory }}
+        run: |
+          echo "actual working_directory: $ACTUAL"
+          if [ "$ACTUAL" != "tests/fixtures/get-target-config/aws/foo/dev" ]; then
+            echo "FAIL: expected working_directory='tests/fixtures/get-target-config/aws/foo/dev', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: working_directory is correct"
+
+      - name: Assert terraform_command output
+        env:
+          ACTUAL: ${{ steps.action.outputs.terraform_command }}
+        run: |
+          echo "actual terraform_command: $ACTUAL"
+          if [ "$ACTUAL" != "terraform" ]; then
+            echo "FAIL: expected terraform_command='terraform', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: terraform_command is correct"
+
+      - name: Assert enable_tflint output
+        env:
+          ACTUAL: ${{ steps.action.outputs.enable_tflint }}
+        run: |
+          echo "actual enable_tflint: $ACTUAL"
+          if [ "$ACTUAL" != "true" ]; then
+            echo "FAIL: expected enable_tflint='true', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: enable_tflint is correct"
+
+      - name: Assert enable_trivy output
+        env:
+          ACTUAL: ${{ steps.action.outputs.enable_trivy }}
+        run: |
+          echo "actual enable_trivy: $ACTUAL"
+          if [ "$ACTUAL" != "true" ]; then
+            echo "FAIL: expected enable_trivy='true', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: enable_trivy is correct"

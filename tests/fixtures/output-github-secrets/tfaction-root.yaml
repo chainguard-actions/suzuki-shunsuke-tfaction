@@ -1,0 +1,4 @@
+plan_workflow_name: plan.yaml
+target_groups:
+  - working_directory: "tests/fixtures/output-github-secrets/**"
+    template_dir: "templates/github"

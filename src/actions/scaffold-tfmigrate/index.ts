@@ -1,0 +1,19 @@
+import * as env from "../../lib/env";
+import * as input from "../../lib/input";
+import { run } from "./run";
+
+export const main = async () => {
+  await run({
+    githubToken: input.githubToken,
+    migrationName: input.migrationName,
+    prNumber: input.prNumber,
+    csmAppId: input.csmAppId,
+    csmAppPrivateKey: input.csmAppPrivateKey,
+    target: env.all.TFACTION_TARGET,
+    workingDir: env.all.TFACTION_WORKING_DIR,
+    actor: env.all.GITHUB_ACTOR,
+    repository: env.all.GITHUB_REPOSITORY,
+    runURL: env.runURL,
+    stepSummaryPath: env.all.GITHUB_STEP_SUMMARY,
+  });
+};

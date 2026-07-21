@@ -1,0 +1,14 @@
+name: Generate document from JSON Schema and deploy
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - .github/workflows/deploy-schema.yaml
+      - schema/**
+
+jobs:
+  deploy-schema:
+    uses: ./.github/workflows/wc-deploy-schema.yaml
+    permissions:
+      contents: write
