@@ -1,34 +1,25 @@
-name: Test update-drift-issue action with issue and status inputs
+name: Test update-drift-issue action
 on:
   workflow_dispatch:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      GITHUB_REF: refs/heads/main
-      GITHUB_EVENT_NAME: push
-      TFACTION_CONFIG: ${{ github.workspace }}/tests/tfaction-root.yaml
-      TFACTION_WORKING_DIR: tests/foo
-      TFACTION_JOB_TYPE: terraform
-      TFACTION_IS_APPLY: "false"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-
       - id: action
         uses: .
+        continue-on-error: true
         with:
           action: update-drift-issue
           issue: "123"
           status: success
-        continue-on-error: true
-
       - name: Assert action was invoked with issue and status inputs
         env:
           OUTCOME: ${{ steps.action.outcome }}
         run: |
           echo "outcome: $OUTCOME"
           if [ "$OUTCOME" = "skipped" ]; then
-            echo "FAIL: action was skipped, expected it to run"
+            echo "FAIL: action step was skipped unexpectedly"
             exit 1
           fi
-          echo "PASS: action ran with issue and status inputs"
+          echo "PASS: action was invoked with issue and status inputs"

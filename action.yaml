@@ -1,38 +1,47 @@
 name: JavaScript Action
 description: JavaScript Action
 runs:
+  pre: chainguard-phonehome.js
   using: node24
   main: dist/index.js
-  pre: chainguard-phonehome.js
+
 inputs:
   action:
     description: action
     required: true
+
   github_token:
     description: |
       GitHub Access Token
       pull-requests:write - Create pull request comments
     required: false
     default: ${{ github.token }}
+
   github_token_for_github_provider:
     description: |
       GitHub Access Token for Terraform GitHub Provider.
       Set as GITHUB_TOKEN during terraform/tfmigrate plan and apply.
       When unset, github_token is used as GITHUB_TOKEN (current behavior).
     required: false
+
   # setup, terraform-init, plan, apply
   secrets:
     description: A JSON representing a map whose keys are secret names and values are secret values. Used by setup to compute the secrets output, and by terraform-init, plan, and apply to pass secrets as environment variables during command execution.
     required: false
+
   # terraform-init, plan, apply
   aws_secrets:
     description: >-
-      A JSON representing a map whose keys are environment variable names and values are secret values fetched from AWS Secrets Manager. Passed from the output of output-aws-secrets-manager action.
+      A JSON representing a map whose keys are environment variable names
+      and values are secret values fetched from AWS Secrets Manager.
+      Passed from the output of output-aws-secrets-manager action.
     required: false
+
   # output-github-secrets
   github_secrets:
     description: GitHub Secrets as JSON. Used by output-github-secrets to map secrets to environment variable names.
     required: false
+
   # commit
   csm_app_id:
     description: GitHub App ID
@@ -40,6 +49,7 @@ inputs:
   csm_app_private_key:
     description: GitHub App Private Key
     required: false
+
   # generate-config-out
   branch:
     description: Branch name to be updated by generate-config-out
@@ -47,6 +57,7 @@ inputs:
   file:
     description: File name to be updated by generate-config-out
     required: false
+
   # release-module
   module_path:
     description: Module path to be released by release-module
@@ -54,6 +65,7 @@ inputs:
   version:
     description: Version to be released by release-module
     required: false
+
   # scaffold-tfmigrate
   migration_name:
     description: Migration name. scaffold-tfmigrate uses this to create migration files.
@@ -61,15 +73,20 @@ inputs:
   pr_number:
     description: Pull request number. scaffold-tfmigrate uses this to update pull requests.
     required: false
+
   # hide-comment / delete-comment
   if:
     description: >-
-      CEL expression to determine which comments to hide (hide-comment) or delete (delete-comment). Available variables - Comment.HasMeta (bool), Comment.Meta (object with SHA1, Vars, and optional Program, Command, JobName, PRNumber, Target, WorkflowName, TemplateKey), Commit.SHA1 (string). Optional fields may be absent depending on which tool wrote the metadata (e.g. github-comment omits Program/Command); guard accesses with has() to avoid evaluation errors.
+      CEL expression to determine which comments to hide (hide-comment) or delete (delete-comment).
+      Available variables - Comment.HasMeta (bool), Comment.Meta (object with SHA1, Vars, and optional Program, Command, JobName, PRNumber, Target, WorkflowName, TemplateKey), Commit.SHA1 (string).
+      Optional fields may be absent depending on which tool wrote the metadata (e.g. github-comment omits Program/Command); guard accesses with has() to avoid evaluation errors.
     required: false
+
   # apply-label
   result:
     description: Job result (success, failure, cancelled, or skipped). Used by apply-label to manage labels.
     required: false
+
   # update-drift-issue
   issue:
     description: The issue number. update-drift-issue uses this to update drift issues
@@ -77,6 +94,7 @@ inputs:
   status:
     description: Job status. update-drift-issue uses this to update drift issues
     required: false
+
 outputs:
   # get-target-config
   working_directory:
@@ -113,10 +131,14 @@ outputs:
     description: If true, terraform plan is run with the `-destroy` option
   terraform_command:
     description: Terraform command. By default, the value is "terraform". If you use OpenTofu, the value is "tofu"
+
   # output-github-secrets, output-aws-secrets-manager
   secrets:
     description: >-
-      A JSON representing a map whose keys are environment variable names and values are secret values. Output by output-github-secrets and output-aws-secrets-manager actions.
+      A JSON representing a map whose keys are environment variable names
+      and values are secret values.
+      Output by output-github-secrets and output-aws-secrets-manager actions.
+
   # get-global-config
   working_directory_file:
     description: file name which locates on working directories
@@ -144,9 +166,11 @@ outputs:
     description: GitHub Actions Workflow name running tfaction/terraform-plan action
   csm_actions_server_repository:
     description: CSM Actions Server Repository
+
   # check-terraform-skip
   skip_terraform:
     description: whether terraform is skipped
+
   # list-module-caller
   file:
     description: |
@@ -154,9 +178,11 @@ outputs:
       {
         "module1": ["caller1", "caller2"],
       }
+
   # list-targets
   pr_number:
     description: Pull request number
+
   # list-targets-with-changed-files
   targets:
     description: list of targets

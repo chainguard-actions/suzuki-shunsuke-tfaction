@@ -1,0 +1,16 @@
+plan_workflow_name: plan
+target_groups:
+  - working_directory: "aws/dev/**"
+    aws_region: us-east-1
+    aws_assume_role_arn: arn:aws:iam::123456789012:role/test-role
+    terraform_plan_config:
+      aws_assume_role_arn: arn:aws:iam::123456789012:role/plan-role
+    terraform_apply_config:
+      aws_assume_role_arn: arn:aws:iam::123456789012:role/apply-role
+tflint:
+  enabled: false
+  fix: false
+trivy:
+  enabled: false
+terraform_command: terraform
+working_directory_file: tfaction.yaml

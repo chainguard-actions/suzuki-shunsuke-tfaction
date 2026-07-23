@@ -4,43 +4,50 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
-    env:
-      GITHUB_REF: refs/heads/main
-      GITHUB_EVENT_NAME: push
-      # tfaction env vars
-      TFACTION_CONFIG: ${{ github.workspace }}/tests/tfaction-root.yaml
-      TFACTION_WORKING_DIR: tests/foo
-      TFACTION_JOB_TYPE: terraform
-      TFACTION_IS_APPLY: "false"
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Create tfaction config and working directory
+        run: |
+          mkdir -p "$GITHUB_WORKSPACE/tests/fixtures/aws/dev/myapp"
+          cat > "$GITHUB_WORKSPACE/tfaction-root.yaml" <<'EOF'
+          plan_workflow_name: plan
+          target_groups:
+            - working_directory: "tests/fixtures/aws/dev/**"
+              aws_region: us-east-1
+              aws_assume_role_arn: arn:aws:iam::123456789012:role/test-role
+          tflint:
+            enabled: false
+            fix: false
+          trivy:
+            enabled: false
+          terraform_command: terraform
+          working_directory_file: tfaction.yaml
+          EOF
+          cat > "$GITHUB_WORKSPACE/tests/fixtures/aws/dev/myapp/tfaction.yaml" <<'EOF'
+          {}
+          EOF
 
       - id: action
         uses: .
         with:
           action: get-target-config
+        env:
+          TFACTION_CONFIG: tfaction-root.yaml
+          TFACTION_WORKING_DIR: tests/fixtures/aws/dev/myapp
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_IS_APPLY: "false"
 
       - name: Assert working_directory output
         env:
           ACTUAL: ${{ steps.action.outputs.working_directory }}
         run: |
           echo "actual working_directory: $ACTUAL"
-          if [ "$ACTUAL" != "tests/foo" ]; then
-            echo "FAIL: expected 'tests/foo' but got '$ACTUAL'"
+          if [ "$ACTUAL" != "tests/fixtures/aws/dev/myapp" ]; then
+            echo "FAIL: expected working_directory='tests/fixtures/aws/dev/myapp', got '$ACTUAL'"
             exit 1
           fi
-          echo "PASS"
-
-      - name: Assert aws_region output
-        env:
-          ACTUAL: ${{ steps.action.outputs.aws_region }}
-        run: |
-          echo "actual aws_region: $ACTUAL"
-          if [ "$ACTUAL" != "ap-northeast-1" ]; then
-            echo "FAIL: expected 'ap-northeast-1' but got '$ACTUAL'"
-            exit 1
-          fi
-          echo "PASS"
+          echo "PASS: working_directory is correct"
 
       - name: Assert terraform_command output
         env:
@@ -48,7 +55,29 @@ jobs:
         run: |
           echo "actual terraform_command: $ACTUAL"
           if [ "$ACTUAL" != "terraform" ]; then
-            echo "FAIL: expected 'terraform' but got '$ACTUAL'"
+            echo "FAIL: expected terraform_command='terraform', got '$ACTUAL'"
             exit 1
           fi
-          echo "PASS"
+          echo "PASS: terraform_command is correct"
+
+      - name: Assert aws_region output
+        env:
+          ACTUAL: ${{ steps.action.outputs.aws_region }}
+        run: |
+          echo "actual aws_region: $ACTUAL"
+          if [ "$ACTUAL" != "us-east-1" ]; then
+            echo "FAIL: expected aws_region='us-east-1', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: aws_region is correct"
+
+      - name: Assert enable_tflint output is false
+        env:
+          ACTUAL: ${{ steps.action.outputs.enable_tflint }}
+        run: |
+          echo "actual enable_tflint: $ACTUAL"
+          if [ "$ACTUAL" != "false" ]; then
+            echo "FAIL: expected enable_tflint='false', got '$ACTUAL'"
+            exit 1
+          fi
+          echo "PASS: enable_tflint is correct"
