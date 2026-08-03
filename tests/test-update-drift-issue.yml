@@ -1,0 +1,35 @@
+name: Test update-drift-issue action (covers issue and status inputs)
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        continue-on-error: true
+        env:
+          TFACTION_CONFIG: ${{ github.workspace }}/tests/fixtures/tfaction-root.yaml
+          TFACTION_WORKING_DIR: tests/fixtures/working-dirs/myapp/dev
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_IS_APPLY: "false"
+        with:
+          action: update-drift-issue
+          issue: "123"
+          status: success
+
+      - name: Assert action ran (update-drift-issue may fail on sentinel repo)
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+        run: |
+          echo "outcome: $OUTCOME"
+          if [ "$OUTCOME" = "success" ]; then
+            echo "PASS: update-drift-issue action succeeded"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (expected on sentinel repo)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

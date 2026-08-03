@@ -1,0 +1,64 @@
+name: Test get-target-config action
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - id: action
+        uses: .
+        env:
+          TFACTION_CONFIG: ${{ github.workspace }}/tests/fixtures/tfaction-root.yaml
+          TFACTION_WORKING_DIR: tests/fixtures/working-dirs/myapp/dev
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_IS_APPLY: "false"
+        with:
+          action: get-target-config
+
+      - name: Assert working_directory output is set
+        env:
+          WORKING_DIR: ${{ steps.action.outputs.working_directory }}
+        run: |
+          echo "working_directory: $WORKING_DIR"
+          if [ -z "$WORKING_DIR" ]; then
+            echo "FAIL: expected working_directory output to be set"
+            exit 1
+          fi
+          if [ "$WORKING_DIR" != "tests/fixtures/working-dirs/myapp/dev" ]; then
+            echo "FAIL: expected 'tests/fixtures/working-dirs/myapp/dev', got '$WORKING_DIR'"
+            exit 1
+          fi
+          echo "PASS: working_directory is '$WORKING_DIR'"
+
+      - name: Assert terraform_command output is set
+        env:
+          TF_CMD: ${{ steps.action.outputs.terraform_command }}
+        run: |
+          echo "terraform_command: $TF_CMD"
+          if [ -z "$TF_CMD" ]; then
+            echo "FAIL: expected terraform_command output to be set"
+            exit 1
+          fi
+          if [ "$TF_CMD" != "terraform" ]; then
+            echo "FAIL: expected 'terraform', got '$TF_CMD'"
+            exit 1
+          fi
+          echo "PASS: terraform_command is '$TF_CMD'"
+
+      - name: Assert enable_tflint output is set
+        env:
+          ENABLE_TFLINT: ${{ steps.action.outputs.enable_tflint }}
+        run: |
+          echo "enable_tflint: $ENABLE_TFLINT"
+          if [ -z "$ENABLE_TFLINT" ]; then
+            echo "FAIL: expected enable_tflint output to be set"
+            exit 1
+          fi
+          # fixture config has tflint.enabled: false
+          if [ "$ENABLE_TFLINT" != "false" ]; then
+            echo "FAIL: expected 'false', got '$ENABLE_TFLINT'"
+            exit 1
+          fi
+          echo "PASS: enable_tflint is '$ENABLE_TFLINT'"

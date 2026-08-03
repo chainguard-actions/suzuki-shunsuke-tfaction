@@ -1,0 +1,23 @@
+---
+name: wc-test
+on:
+  workflow_call:
+    secrets:
+      TAKUMI_GUARD_BOT_ID:
+        required: true
+jobs:
+  test:
+    timeout-minutes: 15
+    runs-on: ubuntu-24.04
+    permissions:
+      id-token: write # Required for OIDC
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: flatt-security/setup-takumi-guard-npm@9a5d797c2085b6326d3a2985c08e3a114b9b88c1 # v1.1.1
+        with:
+          bot-id: ${{secrets.TAKUMI_GUARD_BOT_ID}}
+      - run: npm ci
+      - run: npm t
+      - run: npx eslint

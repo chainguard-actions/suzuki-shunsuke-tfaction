@@ -1,0 +1,86 @@
+name: test (workflow_call)
+on:
+  workflow_call:
+    secrets:
+      gh_app_id:
+        required: false
+      gh_app_private_key:
+        required: false
+      TAKUMI_GUARD_BOT_ID:
+        required: true
+jobs:
+  path-filter:
+    # Get changed files to filter jobs
+    timeout-minutes: 10
+    outputs:
+      renovate-config-validator: ${{steps.changes.outputs.renovate-config-validator}}
+      ghalint: ${{steps.changes.outputs.ghalint}}
+    runs-on: ubuntu-24.04
+    permissions: {}
+    steps:
+      - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
+        id: changes
+        with:
+          filters: |
+            renovate-config-validator:
+              - renovate.json5
+              - .github/workflows/test.yaml
+              - .github/workflows/wc-renovate-config-validator.yaml
+            ghalint:
+              - .github/workflows/*.yaml
+              - aqua/ghalint.yaml
+            build-schema:
+              - .github/workflows/test.yaml
+              - .github/workflows/wc-deploy-schema.yaml
+              - "schema/**"
+
+  renovate-config-validator:
+    uses: ./.github/workflows/wc-renovate-config-validator.yaml
+    needs: path-filter
+    if: needs.path-filter.outputs.renovate-config-validator == 'true'
+    permissions:
+      contents: read
+
+  ghalint:
+    needs: path-filter
+    if: needs.path-filter.outputs.ghalint == 'true'
+    uses: ./.github/workflows/wc-ghalint.yaml
+    permissions: {}
+
+  build-schema:
+    uses: ./.github/workflows/wc-deploy-schema.yaml
+    permissions:
+      contents: write
+
+  test:
+    uses: ./.github/workflows/wc-test.yaml
+    permissions:
+      id-token: write
+    secrets:
+      TAKUMI_GUARD_BOT_ID: ${{secrets.TAKUMI_GUARD_BOT_ID}}
+
+  create-pr-branch:
+    uses: ./.github/workflows/wc-create-pr-branch.yaml
+    if: |
+      ! (github.event_name == 'pull_request' && github.event.pull_request.head.repo.fork)
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+      id-token: write
+    with:
+      pr: ${{github.event.pull_request.number}}
+    secrets:
+      gh_app_id: ${{secrets.gh_app_id}}
+      gh_app_private_key: ${{secrets.gh_app_private_key}}
+      TAKUMI_GUARD_BOT_ID: ${{secrets.TAKUMI_GUARD_BOT_ID}}
+
+  typos:
+    uses: ./.github/workflows/workflow_call_typos.yaml
+    permissions: {}
+
+  test_deploy_doc:
+    uses: ./.github/workflows/workflow_call_deploy_doc.yaml
+    permissions:
+      issues: write
+      contents: write

@@ -1,0 +1,13 @@
+---
+plan_workflow_name: plan.yaml
+
+tflint:
+  enabled: false
+  fix: false
+
+trivy:
+  enabled: false
+
+target_groups:
+  - working_directory: "tests/fixtures/working-dirs/**"
+    template_dir: tests/fixtures/templates
