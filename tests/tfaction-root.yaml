@@ -1,0 +1,71 @@
+---
+# yaml-language-server: $schema=../schema/tfaction-root.json
+plan_workflow_name: test.yaml
+
+label_prefixes:
+  tfmigrate: "migrate:"
+providers_lock_opts: -platform=linux_amd64 -platform=darwin_amd64
+
+available_providers:
+  - name: registry.terraform.io/hashicorp/null
+
+auto_apps:
+  allow_auto_merge_change: true
+
+labels:
+  - regexp: ".*/foo$"
+    label: foo
+  - regexp: "^.*/terragrunt/*$"
+    label: terragrunt
+    color: 8e1f1b
+
+conftest:
+  policies:
+    - policy: tests/conftest/policy/hcl
+      tf: true
+    - policy: tests/conftest/policy/plan
+      plan: true
+
+update_local_path_module_caller:
+  enabled: true
+
+trivy:
+  enabled: true
+tflint:
+  enabled: true
+  fix: true
+
+scaffold_working_directory: {}
+
+aqua:
+  update_checksum:
+    # Update aqua-checksums.json in `setup` action
+    enabled: true # default is false
+    skip_push: false # default is false
+    prune: true # default is false{}
+
+drift_detection:
+  enabled: true
+  issue_repo_owner: suzuki-shunsuke
+  issue_repo_name: test-tfaction
+  minimum_detection_interval: 1
+  num_of_issues: 3
+
+replace_target:
+  patterns:
+    - regexp: /services/
+      replace: /
+
+target_groups:
+  - working_directory: tests/**
+    aws_region: ap-northeast-1
+    s3_bucket_name_tfmigrate_history: 0000-0000-0000-suzuki-shunsuke-tfmigrate-history
+    template_dir: tests/templates/github
+    terraform_plan_config:
+      aws_assume_role_arn: arn:aws:iam::000000000000:role/GitHubActions_Terraform_AWS_terraform_plan
+    tfmigrate_plan_config:
+      aws_assume_role_arn: arn:aws:iam::000000000000:role/GitHubActions_Terraform_AWS_tfmigrate_plan
+    terraform_apply_config:
+      aws_assume_role_arn: arn:aws:iam::000000000000:role/GitHubActions_Terraform_AWS_terraform_apply
+    tfmigrate_apply_config:
+      aws_assume_role_arn: arn:aws:iam::000000000000:role/GitHubActions_Terraform_AWS_tfmigrate_apply

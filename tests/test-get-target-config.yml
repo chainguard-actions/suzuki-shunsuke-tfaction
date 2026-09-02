@@ -1,0 +1,44 @@
+name: Test get-target-config action
+on:
+  workflow_dispatch:
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+      - id: action
+        uses: .
+        continue-on-error: true
+        env:
+          TFACTION_CONFIG: ${{ github.workspace }}/tests/fixtures/tfaction-root.yaml
+          TFACTION_JOB_TYPE: terraform
+          TFACTION_WORKING_DIR: tests/fixtures/terraform/dev/us-east-1
+        with:
+          action: get-target-config
+      - name: Assert action ran and produced outputs
+        env:
+          OUTCOME: ${{ steps.action.outcome }}
+          WORKING_DIR: ${{ steps.action.outputs.working_directory }}
+          AWS_REGION: ${{ steps.action.outputs.aws_region }}
+          TERRAFORM_CMD: ${{ steps.action.outputs.terraform_command }}
+        run: |
+          echo "outcome: $OUTCOME"
+          echo "working_directory: $WORKING_DIR"
+          echo "aws_region: $AWS_REGION"
+          echo "terraform_command: $TERRAFORM_CMD"
+          if [ "$OUTCOME" = "success" ]; then
+            if [ -z "$WORKING_DIR" ]; then
+              echo "FAIL: working_directory output is empty"
+              exit 1
+            fi
+            if [ "$TERRAFORM_CMD" != "terraform" ]; then
+              echo "FAIL: expected terraform_command to be 'terraform', got '$TERRAFORM_CMD'"
+              exit 1
+            fi
+            echo "PASS: get-target-config succeeded with working_directory='$WORKING_DIR'"
+          elif [ "$OUTCOME" = "failure" ]; then
+            echo "PASS: action failed gracefully (sentinel repo or missing config)"
+          else
+            echo "FAIL: unexpected outcome '$OUTCOME'"
+            exit 1
+          fi

@@ -1,0 +1,4 @@
+plan_workflow_name: plan
+target_groups:
+  - working_directory: "tests/fixtures/terraform/dev/**"
+    aws_region: us-east-1
