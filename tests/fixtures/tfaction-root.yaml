@@ -1,0 +1,13 @@
+plan_workflow_name: plan.yaml
+target_groups:
+  - working_directory: "tests/fixtures/working-dirs/**"
+    template_dir: "tests/fixtures/templates"
+    aws_region: "us-east-1"
+tflint:
+  enabled: true
+  fix: false
+trivy:
+  enabled: false
+terraform_command: terraform
+working_directory_file: tfaction.yaml
+module_file: tfaction_module.yaml

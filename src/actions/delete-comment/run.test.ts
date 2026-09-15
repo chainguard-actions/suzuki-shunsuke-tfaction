@@ -1,0 +1,313 @@
+import { describe, it, expect, vi, beforeEach } from "vitest";
+import { DEFAULT_CONDITION, type Logger } from "../../lib/comment";
+import { run, type RunInput } from "./run";
+
+describe("run", () => {
+  const createMockOctokit = () => ({
+    graphql: vi.fn(),
+  });
+
+  const createMockLogger = (): Logger => ({
+    info: vi.fn(),
+    debug: vi.fn(),
+  });
+
+  const makeComment = (
+    id: string,
+    body: string,
+    isMinimized: boolean = false,
+  ) => ({
+    id,
+    body,
+    isMinimized,
+  });
+
+  const makeMetaComment = (
+    id: string,
+    sha: string,
+    program: string = "tfcmt",
+    command: string = "plan",
+    isMinimized: boolean = false,
+  ) =>
+    makeComment(
+      id,
+      `Plan result\n<!-- github-comment: {"SHA1":"${sha}","Program":"${program}","Command":"${command}","JobName":"job","PRNumber":1,"Target":"aws/dev","WorkflowName":"ci","Vars":{}} -->`,
+      isMinimized,
+    );
+
+  const makeGitHubCommentMeta = (
+    id: string,
+    sha: string,
+    isMinimized: boolean = false,
+  ) =>
+    makeComment(
+      id,
+      `Result\n<!-- github-comment: {"JobName":"lintnet","SHA1":"${sha}","TemplateKey":"default","Vars":{},"WorkflowName":"test"} -->`,
+      isMinimized,
+    );
+
+  const graphqlPage = (
+    nodes: Array<{ id: string; body: string; isMinimized: boolean }>,
+    hasNextPage: boolean = false,
+    endCursor: string | null = null,
+  ) => ({
+    repository: {
+      pullRequest: {
+        comments: {
+          nodes,
+          pageInfo: { endCursor, hasNextPage },
+        },
+      },
+    },
+  });
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("deletes comments matching condition (different SHA, not apply)", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql
+      .mockResolvedValueOnce(
+        graphqlPage([
+          makeMetaComment("c1", "old-sha", "tfcmt", "plan"),
+          makeMetaComment("c2", "old-sha", "github-comment", "post"),
+        ]),
+      )
+      .mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(2);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it("skips apply comments (Program=tfcmt, Command=apply)", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql
+      .mockResolvedValueOnce(
+        graphqlPage([
+          makeMetaComment("c1", "old-sha", "tfcmt", "apply"),
+          makeMetaComment("c2", "old-sha", "tfcmt", "plan"),
+        ]),
+      )
+      .mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(1);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it("skips comments with same SHA as current", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql.mockResolvedValueOnce(
+      graphqlPage([
+        makeMetaComment("c1", "current-sha", "tfcmt", "plan"),
+        makeMetaComment("c2", "old-sha", "tfcmt", "plan"),
+      ]),
+    );
+    octokit.graphql.mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "current-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(1);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it("deletes already-minimized comments matching condition", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql.mockResolvedValueOnce(
+      graphqlPage([
+        makeMetaComment("c1", "old-sha", "tfcmt", "plan", true),
+        makeMetaComment("c2", "old-sha", "tfcmt", "plan", false),
+      ]),
+    );
+    octokit.graphql.mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(2);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it("deletes github-comment-style comments (no Program/Command) with old SHA", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql
+      .mockResolvedValueOnce(
+        graphqlPage([makeGitHubCommentMeta("c1", "old-sha")]),
+      )
+      .mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(1);
+    expect(result.totalCount).toBe(1);
+  });
+
+  it("skips comments without metadata (default condition)", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql.mockResolvedValueOnce(
+      graphqlPage([
+        makeComment("c1", "A plain comment without metadata"),
+        makeMetaComment("c2", "old-sha", "tfcmt", "plan"),
+      ]),
+    );
+    octokit.graphql.mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(1);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it("handles empty PR (no comments)", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql.mockResolvedValueOnce(graphqlPage([]));
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(0);
+    expect(result.totalCount).toBe(0);
+  });
+
+  it("handles pagination", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    // First page
+    octokit.graphql.mockResolvedValueOnce(
+      graphqlPage(
+        [makeMetaComment("c1", "old-sha", "tfcmt", "plan")],
+        true,
+        "cursor1",
+      ),
+    );
+    // Second page
+    octokit.graphql.mockResolvedValueOnce(
+      graphqlPage([makeMetaComment("c2", "old-sha", "tfcmt", "plan")]),
+    );
+    // deleteComment calls
+    octokit.graphql.mockResolvedValue({});
+
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: DEFAULT_CONDITION,
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(2);
+    expect(result.totalCount).toBe(2);
+  });
+
+  it("supports custom if condition", async () => {
+    const octokit = createMockOctokit();
+    const logger = createMockLogger();
+
+    octokit.graphql
+      .mockResolvedValueOnce(
+        graphqlPage([
+          makeMetaComment("c1", "old-sha", "tfcmt", "plan"),
+          makeMetaComment("c2", "old-sha", "tfcmt", "apply"),
+        ]),
+      )
+      .mockResolvedValue({});
+
+    // Custom condition that deletes all comments with metadata (including apply)
+    const input: RunInput = {
+      octokit: octokit as unknown as RunInput["octokit"],
+      repoOwner: "owner",
+      repoName: "repo",
+      prNumber: 1,
+      commitSHA: "new-sha",
+      ifCondition: "Comment.HasMeta",
+      logger,
+    };
+
+    const result = await run(input);
+    expect(result.deletedCount).toBe(2);
+    expect(result.totalCount).toBe(2);
+  });
+});

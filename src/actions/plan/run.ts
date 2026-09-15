@@ -1,0 +1,694 @@
+import * as core from "@actions/core";
+import * as fs from "fs";
+import * as os from "os";
+import * as path from "path";
+import { DefaultArtifactClient } from "@actions/artifact";
+import * as github from "@actions/github";
+import { z } from "zod";
+import * as aqua from "../../aqua";
+import * as lib from "../../lib";
+import * as env from "../../lib/env";
+import * as types from "../../lib/types";
+import * as planStorage from "../../lib/plan_storage";
+import * as getTargetConfig from "../get-target-config";
+import * as conftest from "../../conftest";
+import { post } from "../../comment";
+
+const ResourceChange = z.object({
+  change: z.object({
+    actions: z.array(z.string()),
+  }),
+});
+
+const PlanJson = z.object({
+  resource_changes: z.array(ResourceChange).nullable().optional(),
+});
+
+export type ResultSummary = "no-op" | "update" | "create" | "delete";
+
+export const getResultSummary = (planJsonContent: string): ResultSummary => {
+  const plan = PlanJson.parse(JSON.parse(planJsonContent));
+  const resourceChanges = plan.resource_changes ?? [];
+  let hasUpdate = false;
+  let hasCreate = false;
+  for (const rc of resourceChanges) {
+    const actions = rc.change.actions;
+    if (actions.includes("delete")) {
+      return "delete";
+    }
+    if (actions.includes("update")) {
+      hasUpdate = true;
+    }
+    if (actions.includes("create")) {
+      hasCreate = true;
+    }
+  }
+  if (hasUpdate) {
+    return "update";
+  }
+  return hasCreate ? "create" : "no-op";
+};
+
+type Inputs = {
+  githubToken: string;
+  githubTokenForGitHubProvider?: string;
+  workingDirectory: string;
+  autoAppsLogins: string[];
+  destroy: boolean;
+  tfCommand: string;
+  target: string;
+  driftIssueNumber?: string;
+  prAuthor?: string;
+  ciInfoTempDir?: string;
+  s3BucketNameTfmigrateHistory?: string;
+  gcsBucketNameTfmigrateHistory?: string;
+  allowAutoMergeChange: boolean;
+  dismissApprovalBeforePlan: boolean;
+  prNumber?: number;
+  executor: aqua.Executor;
+  secrets?: Record<string, string>;
+  stepSummaryPath?: string;
+  planFileS3?: types.PlanFileS3;
+};
+
+export type RunInputs = {
+  githubToken: string;
+  githubTokenForGitHubProvider?: string;
+  jobType: string;
+  driftIssueNumber?: string;
+  prAuthor?: string;
+  ciInfoTempDir?: string;
+  prNumber?: number;
+  secrets?: Record<string, string>;
+  stepSummaryPath?: string;
+};
+
+type TerraformPlanOutputs = {
+  detailedExitcode: number;
+  planBinary: string;
+  planJson: string;
+  skipped?: boolean;
+};
+
+type TfmigratePlanOutputs = {
+  changed?: boolean;
+  planBinary?: string;
+  planJson?: string;
+};
+
+export const disableAutoMergeForRenovateChange = async (
+  inputs: Inputs,
+): Promise<void> => {
+  // Skip if not a renovate PR
+  if (!inputs.prAuthor || !inputs.autoAppsLogins.includes(inputs.prAuthor)) {
+    return;
+  }
+
+  // Skip if changes are expected for this target
+  if (inputs.allowAutoMergeChange) {
+    return;
+  }
+
+  // Read pr.json from ciInfoTempDir
+  const prJsonFile = path.join(inputs.ciInfoTempDir || "", "pr.json");
+  if (!fs.existsSync(prJsonFile)) {
+    core.warning(`PR JSON file not found: ${prJsonFile}`);
+    return;
+  }
+
+  const prData = JSON.parse(fs.readFileSync(prJsonFile, "utf8"));
+
+  // If auto_merge is not enabled, nothing to do
+  if (!prData.auto_merge) {
+    return;
+  }
+
+  // Disable auto-merge via GraphQL
+  const octokit = github.getOctokit(inputs.githubToken);
+  await octokit.graphql(
+    `mutation ($nodeId: ID!) {
+      disablePullRequestAutoMerge(input: {pullRequestId: $nodeId}) {
+        clientMutationId
+      }
+    }`,
+    {
+      nodeId: prData.node_id,
+    },
+  );
+
+  await post({
+    octokit: octokit,
+    prNumber: inputs.prNumber ?? 0,
+    templateKey: "renovate-plan-change",
+    vars: {
+      tfaction_target: inputs.target,
+    },
+  });
+};
+
+export const dismissApprovalReviews = async (
+  githubToken: string,
+  prNumber: number,
+): Promise<void> => {
+  try {
+    const octokit = github.getOctokit(githubToken);
+    const { owner, repo } = github.context.repo;
+
+    const query = `query($owner: String!, $repo: String!, $pr: Int!, $cursor: String) {
+      repository(owner: $owner, name: $repo) {
+        pullRequest(number: $pr) {
+          reviews(first: 100, states: [APPROVED], after: $cursor) {
+            nodes {
+              id
+              author {
+                __typename
+                login
+              }
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
+            }
+          }
+        }
+      }
+    }`;
+
+    const reviewIds: Array<{ id: string; login: string | null }> = [];
+    let cursor: string | null = null;
+
+    while (true) {
+      const result: {
+        repository: {
+          pullRequest: {
+            reviews: {
+              nodes: Array<{
+                id: string;
+                author: {
+                  __typename: string;
+                  login: string;
+                } | null;
+              }>;
+              pageInfo: {
+                hasNextPage: boolean;
+                endCursor: string;
+              };
+            };
+          };
+        };
+      } = await octokit.graphql(query, {
+        owner,
+        repo,
+        pr: prNumber,
+        cursor,
+      });
+
+      for (const node of result.repository.pullRequest.reviews.nodes) {
+        reviewIds.push({
+          id: node.id,
+          login: node.author?.__typename === "User" ? node.author.login : null,
+        });
+      }
+
+      if (!result.repository.pullRequest.reviews.pageInfo.hasNextPage) {
+        break;
+      }
+      cursor = result.repository.pullRequest.reviews.pageInfo.endCursor;
+    }
+
+    for (const review of reviewIds) {
+      try {
+        await octokit.graphql(
+          `mutation($reviewId: ID!, $message: String!) {
+            dismissPullRequestReview(input: {pullRequestReviewId: $reviewId, message: $message}) {
+              pullRequestReview {
+                id
+              }
+            }
+          }`,
+          {
+            reviewId: review.id,
+            message: `${review.login ? `@${review.login} ` : ""}Dismissing approval because terraform plan has been re-run. Please review the new plan output before approving again.`,
+          },
+        );
+      } catch (e) {
+        core.warning(
+          `Failed to dismiss review ${review.id}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  } catch (e) {
+    core.warning(
+      `Failed to list reviews: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+};
+
+const generateTfmigrateHcl = async (inputs: Inputs): Promise<boolean> => {
+  const tfmigrateHclPath = path.join(inputs.workingDirectory, ".tfmigrate.hcl");
+
+  // Check if .tfmigrate.hcl already exists
+  if (fs.existsSync(tfmigrateHclPath)) {
+    return false;
+  }
+
+  const installDir = path.join(lib.GitHubActionPath, "install");
+  let templatePath: string;
+  let content: string;
+
+  // Generate from S3 template
+  if (inputs.s3BucketNameTfmigrateHistory) {
+    templatePath = path.join(installDir, "tfmigrate.hcl");
+    content = fs.readFileSync(templatePath, "utf8");
+    content = content.replace(/{{target}}/g, inputs.target);
+    content = content.replace(
+      /{{s3_bucket_name_tfmigrate_history}}/g,
+      inputs.s3BucketNameTfmigrateHistory,
+    );
+  }
+  // Generate from GCS template
+  else if (inputs.gcsBucketNameTfmigrateHistory) {
+    templatePath = path.join(installDir, "tfmigrate-gcs.hcl");
+    content = fs.readFileSync(templatePath, "utf8");
+    content = content.replace(/{{target}}/g, inputs.target);
+    content = content.replace(
+      /{{gcs_bucket_name_tfmigrate_history}}/g,
+      inputs.gcsBucketNameTfmigrateHistory,
+    );
+  } else {
+    // Error: neither S3 nor GCS bucket is configured
+    const octokit = github.getOctokit(inputs.githubToken);
+    await post({
+      octokit,
+      prNumber: inputs.prNumber ?? 0,
+      templateKey: "tfmigrate-hcl-not-found",
+      vars: {
+        tfaction_target: inputs.target,
+      },
+    });
+    throw new Error(
+      ".tfmigrate.hcl is required but neither S3 nor GCS bucket is configured",
+    );
+  }
+
+  // Write .tfmigrate.hcl
+  fs.writeFileSync(tfmigrateHclPath, content);
+  return true;
+};
+
+export const runTfmigratePlan = async (
+  inputs: Inputs,
+): Promise<TfmigratePlanOutputs> => {
+  // Generate .tfmigrate.hcl if it doesn't exist
+  const wasCreated = await generateTfmigrateHcl(inputs);
+  if (wasCreated) {
+    // Early exit: .tfmigrate.hcl was just created
+    core.setOutput("changed", "true");
+    return { changed: true };
+  }
+
+  // Create temp directory and copy plan files
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tfaction-"));
+  const tempPlanBinary = path.join(tempDir, "tfplan.binary");
+  const tempPlanJson = path.join(tempDir, "tfplan.json");
+
+  // Run tfmigrate plan
+  const tfmigrateEnv: env.dynamicEnvs = {};
+  // Set TFMIGRATE_EXEC_PATH if TF_COMMAND is not "terraform"
+  if (!env.all.TFMIGRATE_EXEC_PATH && inputs.tfCommand !== "terraform") {
+    tfmigrateEnv.TFMIGRATE_EXEC_PATH = inputs.tfCommand;
+  }
+
+  const executor = inputs.executor;
+
+  await executor.exec("tfmigrate", ["plan", "--out", tempPlanBinary], {
+    cwd: inputs.workingDirectory,
+    env: {
+      ...tfmigrateEnv,
+      ...(inputs.githubTokenForGitHubProvider
+        ? { GITHUB_TOKEN: inputs.githubTokenForGitHubProvider }
+        : {}),
+    },
+    secretEnvs: inputs.secrets,
+    group: "tfmigrate plan",
+    comment: {
+      token: inputs.githubToken,
+      key: "tfmigrate-plan",
+      vars: {
+        tfaction_target: inputs.target,
+      },
+    },
+  });
+
+  // Run terraform show to convert plan to JSON
+  const showResult = await executor.getExecOutput(
+    inputs.tfCommand,
+    ["show", "-json", tempPlanBinary],
+    {
+      cwd: inputs.workingDirectory,
+      silent: true,
+      group: `${inputs.tfCommand} show`,
+      comment: {
+        token: inputs.githubToken,
+      },
+    },
+  );
+  fs.writeFileSync(tempPlanJson, showResult.stdout);
+  core.setOutput("result_summary", "no-op");
+
+  core.setOutput("plan_json", tempPlanJson);
+  core.setOutput("plan_binary", tempPlanBinary);
+
+  return {
+    planBinary: tempPlanBinary,
+    planJson: tempPlanJson,
+  };
+};
+
+export const runTerraformPlan = async (
+  inputs: Inputs,
+): Promise<TerraformPlanOutputs> => {
+  const installDir = path.join(lib.GitHubActionPath, "install");
+
+  // Create temp directory for plan binary and captured plan output
+  const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "tfaction-"));
+  const tempPlanBinary = path.join(tempDir, "tfplan.binary");
+  const tempPlanJson = path.join(tempDir, "tfplan.json");
+  const tempPlanOutput = path.join(tempDir, "plan.txt");
+
+  const executor = inputs.executor;
+
+  // Run terraform plan directly, capturing combined stdout/stderr while
+  // streaming to the Actions log. The captured output is replayed into
+  // tfcmt below so terraform plan runs only once.
+  const terraformPlanArgs = [
+    "plan",
+    "-no-color",
+    "-detailed-exitcode",
+    "-out",
+    tempPlanBinary,
+    "-input=false",
+  ];
+  if (inputs.destroy) {
+    terraformPlanArgs.push("-destroy");
+    core.warning("The destroy option is enabled");
+  }
+
+  let combinedPlanOutput = "";
+  const detailedExitcode = await executor.exec(
+    inputs.tfCommand,
+    terraformPlanArgs,
+    {
+      cwd: inputs.workingDirectory,
+      ignoreReturnCode: true,
+      secretEnvs: inputs.secrets,
+      group: `${inputs.tfCommand} plan`,
+      env: {
+        GITHUB_TOKEN: inputs.githubTokenForGitHubProvider || inputs.githubToken,
+        TERRAGRUNT_LOG_DISABLE: "true", // https://suzuki-shunsuke.github.io/tfcmt/terragrunt
+      },
+      listeners: {
+        stdout: (data: Buffer) => {
+          combinedPlanOutput += data.toString();
+        },
+        stderr: (data: Buffer) => {
+          combinedPlanOutput += data.toString();
+        },
+      },
+    },
+  );
+  fs.writeFileSync(tempPlanOutput, combinedPlanOutput);
+
+  // Set detailed_exitcode output immediately
+  core.setOutput("detailed_exitcode", detailedExitcode);
+
+  core.setOutput("plan_binary", tempPlanBinary);
+
+  // Replay captured output into tfcmt for PR comment and Step Summary.
+  // Two tfcmt invocations are required because --output writes to a file
+  // instead of the PR; there is no single-call "both" mode.
+  const tfcmtGlobalArgs = [
+    "-var",
+    `target:${inputs.target}`,
+    "-var",
+    `destroy:${inputs.destroy}`,
+  ];
+  if (inputs.driftIssueNumber) {
+    tfcmtGlobalArgs.push("-config", path.join(installDir, "tfcmt-drift.yaml"));
+  }
+  // Use positional args ($1, $2) so the temp path / exit code are not
+  // interpolated into the shell script body.
+  const tfcmtReplayArgs = [
+    "plan",
+    "--",
+    "bash",
+    "-c",
+    'cat "$1" && exit "$2"',
+    "_",
+    tempPlanOutput,
+    String(detailedExitcode),
+  ];
+  const tfcmtEnv = {
+    TFCMT_GITHUB_TOKEN: inputs.githubToken,
+  };
+
+  try {
+    await executor.exec("tfcmt", [...tfcmtGlobalArgs, ...tfcmtReplayArgs], {
+      cwd: inputs.workingDirectory,
+      ignoreReturnCode: true,
+      group: "tfcmt plan",
+      env: tfcmtEnv,
+    });
+  } catch (e) {
+    core.warning(
+      `Failed to post tfcmt PR comment: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+
+  if (inputs.stepSummaryPath) {
+    try {
+      await executor.exec(
+        "tfcmt",
+        [
+          "--output",
+          inputs.stepSummaryPath,
+          ...tfcmtGlobalArgs,
+          ...tfcmtReplayArgs,
+        ],
+        {
+          cwd: inputs.workingDirectory,
+          ignoreReturnCode: true,
+          group: "tfcmt plan (step summary)",
+          env: tfcmtEnv,
+        },
+      );
+    } catch (e) {
+      core.warning(
+        `Failed to write tfcmt Step Summary: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+
+  // If terraform plan failed, exit immediately
+  if (detailedExitcode === 1) {
+    throw new Error("terraform plan failed");
+  }
+
+  // Dismiss existing approval reviews so reviewers must review the new plan
+  // Skip for Renovate PRs with no changes (detailedExitcode === 0)
+  if (inputs.dismissApprovalBeforePlan && inputs.prNumber) {
+    if (
+      detailedExitcode === 0 &&
+      inputs.prAuthor !== undefined &&
+      inputs.autoAppsLogins.includes(inputs.prAuthor)
+    ) {
+      core.info(
+        "Skipping dismiss approval reviews: Renovate PR with no changes",
+      );
+    } else {
+      await dismissApprovalReviews(inputs.githubToken, inputs.prNumber);
+    }
+  }
+
+  // Run terraform show to convert plan to JSON
+  const showResult = await executor.getExecOutput(
+    inputs.tfCommand,
+    ["show", "-json", tempPlanBinary],
+    {
+      cwd: inputs.workingDirectory,
+      silent: true,
+      group: `${inputs.tfCommand} show`,
+      comment: {
+        token: inputs.githubToken,
+      },
+    },
+  );
+  fs.writeFileSync(tempPlanJson, showResult.stdout);
+  const summary = getResultSummary(showResult.stdout);
+  core.setOutput("result_summary", summary);
+
+  core.setOutput("plan_json", tempPlanJson);
+
+  // Upload the plan file and a self-describing metadata file.
+  // When plan_file_s3 is set, the plan file is stored in S3 (only the metadata
+  // file goes to GitHub Artifacts); otherwise the plan file is uploaded to
+  // GitHub Artifacts as before. Restricting access to the bucket is the user's
+  // responsibility (see the plan-file-s3 docs). The metadata file records where
+  // the plan file is stored, so apply resolves the location from it without
+  // looking at its own config.
+  core.startGroup("upload plan artifacts");
+  const artifact = new DefaultArtifactClient();
+  const metaPath = path.join(tempDir, planStorage.metaFileName);
+
+  let meta: planStorage.PlanMeta;
+  if (inputs.planFileS3) {
+    const planFile = await planStorage.uploadPlanToS3(
+      {
+        bucket: inputs.planFileS3.bucket,
+        keyPrefix: inputs.planFileS3.key_prefix,
+        runId: env.all.GITHUB_RUN_ID,
+        attempt: env.all.GITHUB_RUN_ATTEMPT,
+        target: inputs.target,
+      },
+      tempPlanBinary,
+    );
+    meta = {
+      storage: "s3",
+      bucket: inputs.planFileS3.bucket,
+      files: [planFile],
+      summary,
+    };
+  } else {
+    const artifactNameBinary = `terraform_plan_file_${inputs.target.replaceAll("/", "__")}`;
+    core.setOutput("plan_binary_artifact_name", artifactNameBinary);
+    const artifactNameJson = `terraform_plan_json_${inputs.target.replaceAll("/", "__")}`;
+    core.setOutput("plan_json_artifact_name", artifactNameJson);
+    await artifact.uploadArtifact(
+      artifactNameBinary,
+      [tempPlanBinary],
+      tempDir,
+    );
+    await artifact.uploadArtifact(artifactNameJson, [tempPlanJson], tempDir);
+    meta = { storage: "github-artifacts", summary };
+  }
+
+  fs.writeFileSync(metaPath, JSON.stringify(meta));
+  const metaArtifactName = planStorage.metaArtifactName(inputs.target);
+  core.setOutput("plan_meta_artifact_name", metaArtifactName);
+  await artifact.uploadArtifact(metaArtifactName, [metaPath], tempDir);
+  core.endGroup();
+
+  // If no changes, exit successfully
+  if (detailedExitcode === 0) {
+    return {
+      detailedExitcode,
+      planBinary: tempPlanBinary,
+      planJson: tempPlanJson,
+    };
+  }
+
+  // If not drift detection mode, validate renovate changes
+  if (!inputs.driftIssueNumber) {
+    await disableAutoMergeForRenovateChange(inputs);
+  }
+
+  // If drift detection mode and there are changes, fail
+  if (inputs.driftIssueNumber) {
+    throw new Error("Drift detected: terraform plan has changes");
+  }
+
+  return {
+    detailedExitcode,
+    planBinary: tempPlanBinary,
+    planJson: tempPlanJson,
+  };
+};
+
+export const main = async (
+  targetConfig: getTargetConfig.TargetConfig,
+  runInputs: RunInputs,
+): Promise<void> => {
+  if (targetConfig.type === "module") {
+    core.info(
+      `Skipping plan for module target: ${targetConfig.target ?? targetConfig.working_directory}`,
+    );
+    return;
+  }
+
+  const config = await lib.getConfig();
+  const workingDir = path.join(
+    config.git_root_dir,
+    targetConfig.working_directory,
+  );
+
+  const executor = await aqua.NewExecutor({
+    githubToken: runInputs.githubToken,
+    cwd: workingDir,
+  });
+
+  const inputs: Inputs = {
+    githubToken: runInputs.githubToken,
+    githubTokenForGitHubProvider: runInputs.githubTokenForGitHubProvider,
+    workingDirectory: workingDir,
+    autoAppsLogins: config.auto_apps.logins,
+    destroy: targetConfig.destroy || false,
+    tfCommand: targetConfig.terraform_command,
+    target: targetConfig.target,
+    driftIssueNumber: runInputs.driftIssueNumber,
+    prAuthor: runInputs.prAuthor,
+    ciInfoTempDir: runInputs.ciInfoTempDir,
+    s3BucketNameTfmigrateHistory: targetConfig.s3_bucket_name_tfmigrate_history,
+    gcsBucketNameTfmigrateHistory:
+      targetConfig.gcs_bucket_name_tfmigrate_history,
+    allowAutoMergeChange: config.auto_apps.allow_auto_merge_change,
+    dismissApprovalBeforePlan:
+      config.dismiss_approval_before_plan?.enabled !== false,
+    prNumber: runInputs.prNumber,
+    executor,
+    secrets: runInputs.secrets,
+    stepSummaryPath: runInputs.stepSummaryPath,
+    planFileS3: targetConfig.plan_file_s3,
+  };
+
+  const jobType = runInputs.jobType;
+
+  let planJsonPath: string | undefined;
+
+  switch (jobType) {
+    case undefined:
+      throw new Error("TFACTION_JOB_TYPE is not set");
+    case "":
+      throw new Error("TFACTION_JOB_TYPE is not set");
+    case "tfmigrate": {
+      const result = await runTfmigratePlan(inputs);
+      if (result.changed) {
+        // .tfmigrate.hcl was just created, skip conftest
+        return;
+      }
+      planJsonPath = result.planJson;
+      break;
+    }
+    case "terraform": {
+      const result = await runTerraformPlan(inputs);
+      planJsonPath = result.planJson;
+      break;
+    }
+    default:
+      throw new Error(`Unknown TFACTION_JOB_TYPE: ${jobType}`);
+  }
+
+  // Run conftest for plan
+  if (planJsonPath) {
+    await conftest.run(
+      {
+        gitRootDir: config.git_root_dir,
+        githubToken: runInputs.githubToken,
+        plan: true,
+        planJsonPath,
+        executor,
+      },
+      config,
+      targetConfig,
+    );
+  }
+};
