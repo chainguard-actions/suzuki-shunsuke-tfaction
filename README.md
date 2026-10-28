@@ -6,18 +6,18 @@ Hardened by [Chainguard](https://www.chainguard.dev) from the upstream action at
 
 ## Versions
 
-| Version | Tag | Upstream commit |
-|---------|-----|-----------------|
-| v2.0.0-8 | [`v2.0.0-8`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.0-8) | [`f24a403`](https://github.com/suzuki-shunsuke/tfaction/commit/f24a40308c268d6597a72eab8da2edf9cc87da1d) |
-| v2.0.1 | [`v2.0.1`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.1) | [`6ad59de`](https://github.com/suzuki-shunsuke/tfaction/commit/6ad59de70ee7e9c0a11c665c4439b5c148c74328) |
-| v2.0.2 | [`v2.0.2`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.2) | [`92afb0a`](https://github.com/suzuki-shunsuke/tfaction/commit/92afb0ac879cf9c560fe1160a9bbde50b11ff119) |
-| v2.0.3 | [`v2.0.3`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.3) | [`45bd9d6`](https://github.com/suzuki-shunsuke/tfaction/commit/45bd9d6d7f1c396b5f1ca6f4d31dd8247e812539) |
-| v2.0.4 | [`v2.0.4`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.4) | [`0627b0a`](https://github.com/suzuki-shunsuke/tfaction/commit/0627b0a1dfec9479a3fa73a5831be7979661b7eb) |
-| v2.0.5 | [`v2.0.5`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.5) | [`d0d52eb`](https://github.com/suzuki-shunsuke/tfaction/commit/d0d52eb8b2ff13d6e27ac9653d038df384e58827) |
-| v2.0.6 | [`v2.0.6`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.6) | [`4fc32a7`](https://github.com/suzuki-shunsuke/tfaction/commit/4fc32a7692e857bad031bc9e0324e7135c45742b) |
-| v2.1.0 | [`v2.1.0`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.1.0) | [`f62d11c`](https://github.com/suzuki-shunsuke/tfaction/commit/f62d11ce89de2aa26b00efaa266e449769f70442) |
-| v2.1.1 | [`v2.1.1`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.1.1) | [`93bf76c`](https://github.com/suzuki-shunsuke/tfaction/commit/93bf76c239f5120cf83ec5149a1591c25412f9b4) |
-| v2.2.0 | [`v2.2.0`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.2.0) | [`9fdf06d`](https://github.com/suzuki-shunsuke/tfaction/commit/9fdf06dabe8e3d9acb003939af57e477a0d3090e) |
+| Version | Tag | Upstream commit | Hardening report |
+|---------|-----|-----------------|------------------|
+| v2.0.0-8 | [`v2.0.0-8`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.0-8) | [`f24a403`](https://github.com/suzuki-shunsuke/tfaction/commit/f24a40308c268d6597a72eab8da2edf9cc87da1d) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.0-8/HARDENING.md) |
+| v2.0.1 | [`v2.0.1`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.1) | [`6ad59de`](https://github.com/suzuki-shunsuke/tfaction/commit/6ad59de70ee7e9c0a11c665c4439b5c148c74328) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.1/HARDENING.md) |
+| v2.0.2 | [`v2.0.2`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.2) | [`92afb0a`](https://github.com/suzuki-shunsuke/tfaction/commit/92afb0ac879cf9c560fe1160a9bbde50b11ff119) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.2/HARDENING.md) |
+| v2.0.3 | [`v2.0.3`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.3) | [`45bd9d6`](https://github.com/suzuki-shunsuke/tfaction/commit/45bd9d6d7f1c396b5f1ca6f4d31dd8247e812539) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.3/HARDENING.md) |
+| v2.0.4 | [`v2.0.4`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.4) | [`0627b0a`](https://github.com/suzuki-shunsuke/tfaction/commit/0627b0a1dfec9479a3fa73a5831be7979661b7eb) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.4/HARDENING.md) |
+| v2.0.5 | [`v2.0.5`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.5) | [`d0d52eb`](https://github.com/suzuki-shunsuke/tfaction/commit/d0d52eb8b2ff13d6e27ac9653d038df384e58827) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.5/HARDENING.md) |
+| v2.0.6 | [`v2.0.6`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.0.6) | [`4fc32a7`](https://github.com/suzuki-shunsuke/tfaction/commit/4fc32a7692e857bad031bc9e0324e7135c45742b) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.0.6/HARDENING.md) |
+| v2.1.0 | [`v2.1.0`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.1.0) | [`f62d11c`](https://github.com/suzuki-shunsuke/tfaction/commit/f62d11ce89de2aa26b00efaa266e449769f70442) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.1.0/HARDENING.md) |
+| v2.1.1 | [`v2.1.1`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.1.1) | [`93bf76c`](https://github.com/suzuki-shunsuke/tfaction/commit/93bf76c239f5120cf83ec5149a1591c25412f9b4) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.1.1/HARDENING.md) |
+| v2.2.0 | [`v2.2.0`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/tree/v2.2.0) | [`9fdf06d`](https://github.com/suzuki-shunsuke/tfaction/commit/9fdf06dabe8e3d9acb003939af57e477a0d3090e) | [`HARDENING.md`](https://github.com/chainguard-actions/suzuki-shunsuke-tfaction/blob/v2.2.0/HARDENING.md) |
 
 ## Privacy
 
